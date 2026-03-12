@@ -1,0 +1,11 @@
+{
+  "name": "rpi-taxi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "test": "node --test"
+  }
+}
+
