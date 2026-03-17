@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -8,7 +8,8 @@ import { createAppServer } from "../server/index.mjs";
 
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "rpi-taxi-"));
 const stateFile = path.join(tempRoot, "state.json");
-const server = await createAppServer({ stateFile });
+const outboxDir = path.join(tempRoot, "outbox");
+const server = await createAppServer({ outboxDir, stateFile });
 
 await new Promise((resolve) => {
   server.listen(0, "127.0.0.1", resolve);
@@ -102,6 +103,69 @@ test("supports Tesla demo commands", async () => {
   assert.equal(statusPayload.locked, false);
 });
 
+test("creates verified @rpi.edu sessions and returns scoped rider history", async () => {
+  const requestCodeResponse = await fetch(`${baseUrl}/api/auth/request-code`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email: "student@rpi.edu",
+    }),
+  });
+  const requestCodePayload = await requestCodeResponse.json();
+
+  assert.equal(requestCodeResponse.status, 200);
+  assert.equal(requestCodePayload.ok, true);
+  assert.equal(requestCodePayload.delivery.method, "file");
+
+  const outboxFiles = await readdir(path.join(tempRoot, "outbox"));
+  assert.ok(outboxFiles.length >= 1);
+  const latestOutboxFile = path.join(tempRoot, "outbox", outboxFiles.at(-1));
+  const outboxBody = await readFile(latestOutboxFile, "utf8");
+  const codeMatch = outboxBody.match(/\b(\d{6})\b/u);
+  assert.ok(codeMatch);
+
+  const verifyResponse = await fetch(`${baseUrl}/api/auth/verify-code`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      code: codeMatch[1],
+      displayName: "Test Rider",
+      email: "student@rpi.edu",
+    }),
+  });
+  const verifyPayload = await verifyResponse.json();
+  const sessionCookie = verifyResponse.headers.get("set-cookie")?.split(";", 1)[0];
+
+  assert.equal(verifyResponse.status, 200);
+  assert.equal(verifyPayload.user.email, "student@rpi.edu");
+  assert.ok(sessionCookie);
+
+  const sessionResponse = await fetch(`${baseUrl}/api/auth/session`, {
+    headers: {
+      Cookie: sessionCookie,
+    },
+  });
+  const sessionPayload = await sessionResponse.json();
+
+  assert.equal(sessionResponse.status, 200);
+  assert.equal(sessionPayload.authenticated, true);
+  assert.equal(sessionPayload.user.displayName, "Test Rider");
+
+  const historyResponse = await fetch(`${baseUrl}/api/users/me/rides`, {
+    headers: {
+      Cookie: sessionCookie,
+    },
+  });
+  const historyPayload = await historyResponse.json();
+
+  assert.equal(historyResponse.status, 200);
+  assert.ok(Array.isArray(historyPayload));
+});
+
 test("returns local geocode and route fallbacks", async () => {
   const geocodeResponse = await fetch(`${baseUrl}/api/geocode/search?q=Folsom`);
   const geocodePayload = await geocodeResponse.json();
@@ -120,4 +184,3 @@ test("returns local geocode and route fallbacks", async () => {
   assert.ok(routePayload.routes[0].distance > 0);
   assert.equal(routePayload.routes[0].geometry.type, "LineString");
 });
-

@@ -10,8 +10,20 @@ export const POPULAR_PLACES = [
   { name: "DCC", address: "Darrin Communications, RPI", lng: -73.6784, lat: 42.73, category: "campus" },
   { name: "Folsom Library", address: "110 8th St, Troy, NY", lng: -73.6779, lat: 42.7298, category: "campus" },
   { name: "ECAV", address: "East Campus Athletic Village", lng: -73.6726, lat: 42.7333, category: "campus" },
+  { name: "Russell Sage Dining Hall", address: "15th Street, RPI", lng: -73.6761, lat: 42.7293, category: "campus" },
+  { name: "Union", address: "RPI Student Union", lng: -73.6788, lat: 42.7277, category: "campus" },
+  { name: "Mueller Center", address: "Mueller Center, RPI", lng: -73.6794, lat: 42.7285, category: "campus" },
   { name: "Downtown Troy", address: "Downtown Troy, NY", lng: -73.6886, lat: 42.7262, category: "nearby" },
   { name: "Walmart Troy", address: "591 Hoosick St, Troy, NY", lng: -73.6723, lat: 42.7479, category: "nearby" },
+  { name: "Market 32", address: "9 126th St, Troy, NY", lng: -73.6926, lat: 42.7421, category: "nearby" },
+  { name: "Troy Waterfront Farmers Market", address: "River St, Troy, NY", lng: -73.6914, lat: 42.7304, category: "nearby" },
+  { name: "Luca's", address: "49 3rd St, Troy, NY", lng: -73.6917, lat: 42.7298, category: "food" },
+  { name: "Nighthawks", address: "499 Broadway, Troy, NY", lng: -73.6922, lat: 42.7306, category: "food" },
+  { name: "Bard & Baker", address: "501 Broadway, Troy, NY", lng: -73.6923, lat: 42.7307, category: "food" },
+  { name: "Whistling Kettle", address: "254 Broadway, Troy, NY", lng: -73.6908, lat: 42.7312, category: "food" },
+  { name: "Sunhee's Farm and Kitchen", address: "105 Ferry St, Troy, NY", lng: -73.6907, lat: 42.7301, category: "food" },
+  { name: "Little Peck's", address: "211 Broadway, Troy, NY", lng: -73.6909, lat: 42.7315, category: "cafe" },
+  { name: "Stacks Espresso Bar", address: "261 Broadway, Troy, NY", lng: -73.6907, lat: 42.7311, category: "cafe" },
   { name: "Stuyvesant Plaza", address: "Stuyvesant Plaza, Albany", lng: -73.7934, lat: 42.675, category: "nearby" },
 ];
 
@@ -181,4 +193,3 @@ export function buildDefaultRide() {
     }),
   };
 }
-

@@ -25,10 +25,36 @@ function createDefaultTeslaState() {
   };
 }
 
+function createDefaultAuthState() {
+  return {
+    users: [],
+    sessions: [],
+    verificationCodes: [],
+  };
+}
+
+function createDefaultTeslaConnectionState() {
+  return {
+    authorized: false,
+    authorizedAt: null,
+    lastError: null,
+    lastNavigation: null,
+    lastSyncAt: null,
+    oauthStates: [],
+    selectedVehicle: null,
+    tokens: null,
+    vehicleData: null,
+  };
+}
+
 function createDefaultState() {
   return {
     rides: [],
-    tesla: createDefaultTeslaState(),
+    auth: createDefaultAuthState(),
+    tesla: {
+      ...createDefaultTeslaState(),
+      connection: createDefaultTeslaConnectionState(),
+    },
   };
 }
 
@@ -37,6 +63,13 @@ function normalizeState(rawState) {
 
   return {
     rides: Array.isArray(rawState?.rides) ? rawState.rides : defaultState.rides,
+    auth: {
+      users: Array.isArray(rawState?.auth?.users) ? rawState.auth.users : defaultState.auth.users,
+      sessions: Array.isArray(rawState?.auth?.sessions) ? rawState.auth.sessions : defaultState.auth.sessions,
+      verificationCodes: Array.isArray(rawState?.auth?.verificationCodes)
+        ? rawState.auth.verificationCodes
+        : defaultState.auth.verificationCodes,
+    },
     tesla: {
       ...defaultState.tesla,
       ...(rawState?.tesla ?? {}),
@@ -51,6 +84,10 @@ function normalizeState(rawState) {
       vehicle_state: {
         ...defaultState.tesla.vehicle_state,
         ...(rawState?.tesla?.vehicle_state ?? {}),
+      },
+      connection: {
+        ...defaultState.tesla.connection,
+        ...(rawState?.tesla?.connection ?? {}),
       },
     },
   };
@@ -99,4 +136,3 @@ export class JsonStateStore {
     await this.writePromise;
   }
 }
-
