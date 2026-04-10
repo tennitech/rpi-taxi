@@ -4,8 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.mjs",
-    "dev": "node --watch server/index.mjs",
-    "test": "node --test"
+    "dev": "node --watch server/index.mjs"
   }
 }
-

@@ -1,0 +1,334 @@
+@font-face {
+  font-family: "Tesla Sans Display";
+  src: url("/fonts/Tesla-Sans-Display-500-Trial.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "Tesla Sans Text";
+  src: url("/fonts/Tesla-Sans-Text-500-Trial.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+}
+
+:root {
+  color-scheme: dark;
+  --welcome-primary-border: #b69f7f;
+  --welcome-primary-edge: #8c6940;
+  --welcome-primary-center: #b3a18e;
+  --welcome-secondary-border: #303030;
+  --welcome-button-border-width: 1.5px;
+  --welcome-button-radius: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #040506;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Tesla Sans Text", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app,
+robotaxi-map,
+.app-shell,
+.welcome-screen,
+.map-screen,
+.map-root {
+  width: 100%;
+  min-height: 100svh;
+}
+
+#app {
+  background: #040506;
+}
+
+.app-shell {
+  position: relative;
+  overflow: hidden;
+  background: #040506;
+}
+
+.welcome-screen,
+.map-screen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.welcome-screen {
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 1.5rem)
+    clamp(1.75rem, 6vw, 3rem)
+    calc(env(safe-area-inset-bottom, 0px) + clamp(1.9rem, 5vw, 2.85rem));
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.1) 26%, rgba(0, 0, 0, 0.34) 62%, rgba(0, 0, 0, 0.76) 84%, rgba(0, 0, 0, 0.92) 100%),
+    url("./welcome-screen-bg.jpg") center 38% / cover no-repeat;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    visibility 220ms ease;
+}
+
+.app-shell[data-view="map"] .welcome-screen {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(1.015);
+  visibility: hidden;
+}
+
+.welcome-screen__logo {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + clamp(4.5rem, 12.5vh, 7rem));
+  left: 50%;
+  width: min(44vw, 20rem);
+  max-width: 68%;
+  transform: translateX(-50%);
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.welcome-screen__actions {
+  width: min(100%, 42rem);
+  display: grid;
+  gap: 1rem;
+}
+
+.welcome-screen__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: clamp(3.5rem, 8vw, 4rem);
+  padding: 0.85rem 1.6rem 0.9rem;
+  border: var(--welcome-button-border-width) solid transparent;
+  border-radius: var(--welcome-button-radius);
+  color: rgba(255, 255, 255, 0.96);
+  font-family: "Tesla Sans Text", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: clamp(1.05rem, 3.3vw, 1.26rem);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    filter 160ms ease;
+}
+
+.welcome-screen__button:active {
+  transform: scale(0.986);
+}
+
+.welcome-screen__button:focus-visible {
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.14);
+}
+
+.welcome-screen__button--primary {
+  border-color: var(--welcome-primary-border);
+  background:
+    radial-gradient(circle at 68% 50%, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.1) 18%, rgba(255, 255, 255, 0) 42%),
+    linear-gradient(90deg, var(--welcome-primary-edge) 0%, #9a7750 26%, var(--welcome-primary-center) 56%, #cbbba5 78%, #c0aa89 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 14px 30px rgba(0, 0, 0, 0.2);
+}
+
+.welcome-screen__button--secondary {
+  border-color: var(--welcome-secondary-border);
+  background: rgba(1, 1, 1, 0.7);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 14px 30px rgba(0, 0, 0, 0.14);
+}
+
+.welcome-screen__button:hover {
+  filter: brightness(1.03);
+}
+
+.map-screen {
+  position: relative;
+  z-index: 1;
+  background: #040506;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.app-shell[data-view="map"] .map-screen {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.map-screen[data-dev-mode="false"] .theme-toggle {
+  display: none;
+}
+
+.map-screen[data-theme="light"] {
+  background: #e8e8ea;
+}
+
+.theme-toggle {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 0.95rem);
+  left: 50%;
+  z-index: 1000;
+  display: inline-flex;
+  gap: 0.2rem;
+  transform: translateX(-50%);
+  padding: 0.22rem;
+  border-radius: 999px;
+  background: rgba(22, 23, 27, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.map-screen[data-theme="light"] .theme-toggle {
+  background: rgba(250, 250, 252, 0.94);
+  border-color: rgba(175, 177, 183, 0.45);
+  box-shadow: 0 10px 26px rgba(84, 86, 91, 0.12);
+}
+
+.theme-toggle__option {
+  min-width: 64px;
+  padding: 0.48rem 0.82rem 0.45rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: "Tesla Sans Text", sans-serif;
+  font-size: 0.84rem;
+  letter-spacing: -0.01em;
+}
+
+.theme-toggle__option.is-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.98);
+}
+
+.map-screen[data-theme="light"] .theme-toggle__option {
+  color: rgba(92, 94, 99, 0.9);
+}
+
+.map-screen[data-theme="light"] .theme-toggle__option.is-active {
+  background: rgba(162, 165, 171, 0.16);
+  color: rgba(57, 59, 63, 0.98);
+}
+
+.map-root {
+  position: relative;
+}
+
+.leaflet-container {
+  width: 100%;
+  height: 100svh;
+  background: #050607;
+  font-family: "Tesla Sans Text", sans-serif;
+}
+
+.map-screen[data-theme="dark"] .leaflet-container {
+  background: #050607;
+}
+
+.map-screen[data-theme="dark"] .leaflet-dark-base-pane {
+  filter: saturate(0.38) brightness(0.56) contrast(0.84);
+  opacity: 1;
+}
+
+.map-screen[data-theme="dark"] .leaflet-dark-labels-pane {
+  filter: brightness(0.82) contrast(0.92);
+  opacity: 0.56;
+}
+
+.map-screen[data-theme="light"] .leaflet-container {
+  background: #e4e4e6;
+}
+
+.map-screen[data-theme="light"] .leaflet-light-base-pane {
+  filter: saturate(0.03) brightness(0.96) contrast(0.9);
+  opacity: 0.98;
+}
+
+.map-screen[data-theme="light"] .leaflet-light-labels-pane {
+  filter: brightness(0.86) contrast(0.92);
+  opacity: 0.62;
+}
+
+.leaflet-geofence-mask-pane,
+.leaflet-geofence-border-pane,
+.leaflet-user-location-pane {
+  pointer-events: none;
+}
+
+.leaflet-control-container .leaflet-top,
+.leaflet-control-container .leaflet-left,
+.leaflet-control-zoom {
+  display: none;
+}
+
+.leaflet-control-attribution {
+  margin: 0 8px 8px 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(15, 15, 17, 0.38);
+  color: rgba(255, 255, 255, 0.46);
+  font-family: "Tesla Sans Text", sans-serif;
+  font-size: 10px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.leaflet-control-attribution a {
+  color: inherit;
+}
+
+.map-screen[data-theme="light"] .leaflet-control-attribution {
+  background: rgba(236, 236, 239, 0.78);
+  color: rgba(104, 106, 111, 0.68);
+}
+
+.user-location-marker {
+  background: transparent;
+  border: 0;
+}
+
+.user-location-marker__dot {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #4f8dff;
+  border: 3px solid #ffffff;
+  box-shadow: 0 5px 18px rgba(36, 66, 118, 0.36);
+}
+
+@media (min-width: 700px) {
+  .welcome-screen {
+    background-position: center 34%;
+  }
+
+  .welcome-screen__logo {
+    top: calc(env(safe-area-inset-top, 0px) + clamp(4.8rem, 10vh, 7.5rem));
+    width: min(24vw, 18rem);
+  }
+}

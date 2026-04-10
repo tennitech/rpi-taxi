@@ -2,16 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>RPI Taxi — Campus Autonomous Rides</title>
-    <meta name="description" content="RPI Taxi — student-run autonomous ride service at Rensselaer Polytechnic Institute" />
-    <link rel="icon" type="image/png" href="./favicon.png" />
-    <meta name="theme-color" content="#d6001c" />
-    <script src="./app-bridge.js"></script>
-    <script type="module" crossorigin src="./assets/index-POP2QhxT.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-LFk1VK-l.css">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no"
+    />
+    <title>RPI Taxi</title>
+    <meta name="description" content="Mobile-first Tesla-style campus ride-hailing prototype." />
+    <meta name="theme-color" content="#030303" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20260410m" />
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+      }
+
+      if ("caches" in window) {
+        caches.keys().then((keys) => {
+          keys.forEach((key) => caches.delete(key));
+        });
+      }
+    </script>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css?v=20260410m" />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      crossorigin=""
+    ></script>
+    <script type="module" src="./main.js?v=20260410m"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="app"></div>
   </body>
 </html>

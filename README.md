@@ -1,5 +1,6 @@
 # rpi-taxi
-Autonomy meets ridesharing — at RPI.
+
+Minimal mobile PWA starter for an RPI Tesla-style ride-hailing app.
 
 ## Run locally
 
@@ -7,17 +8,10 @@ Autonomy meets ridesharing — at RPI.
 npm start
 ```
 
-The app will be served at `http://127.0.0.1:5000`.
+The app is served at `http://127.0.0.1:5000`.
 
-## What is included
+## Scope
 
-- Static Tesla Robotaxi-style frontend bundle in [`RPI Taxi/index.html`](/Users/kaden/GitHub/rpi-taxi/RPI%20Taxi/index.html)
-- Local Node server with ride, route, geocode, and Tesla demo endpoints in [`server/index.mjs`](/Users/kaden/GitHub/rpi-taxi/server/index.mjs)
-- File-backed state persistence in `data/state.json` (created automatically on first run)
-- Browser bridge that fixes the shipped bundle’s missing rider-to-driver sync in [`RPI Taxi/app-bridge.js`](/Users/kaden/GitHub/rpi-taxi/RPI%20Taxi/app-bridge.js)
-
-## Test
-
-```bash
-npm test
-```
+- Mobile-first shell with PWA manifest and service worker
+- One full-screen Tesla-inspired dark map scene
+- No booking sheet or other app UI yet
