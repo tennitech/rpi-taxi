@@ -59,6 +59,7 @@ const ROUTE_WALK_THRESHOLD_METERS = 12;
 const ROUTE_WALK_METERS_PER_MINUTE = 80;
 const ROUTE_PULSE_PERIOD_MS = 3900;
 const ROUTE_PULSE_FILL_FRACTION = 0.34;
+const RIDE_BOOKED_DELAY_MS = 3000;
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
 const DEFAULT_SEARCH_ORIGIN = GEOFENCE.centroid;
 
@@ -273,6 +274,19 @@ const template = String.raw`
               <header class="ride-booking-card__eta">
                 <span data-booking-eta-text>A ride can arrive in <strong>~ min</strong></span>
               </header>
+              <header class="ride-booking-card__booked">
+                <span class="ride-booking-card__booked-copy">
+                  <span class="ride-booking-card__booked-title">Your ride is booked</span>
+                  <span class="ride-booking-card__plate">Plate: XAI</span>
+                </span>
+                <span class="ride-booking-card__car-wrap" aria-hidden="true">
+                  <img
+                    class="ride-booking-card__car"
+                    src="./ride-booked-model-3-black-white-avatar.svg"
+                    alt=""
+                  />
+                </span>
+              </header>
               <div class="ride-booking-card__route">
                 <div class="ride-booking-stop ride-booking-stop--pickup">
                   <span class="ride-booking-stop__target" aria-hidden="true"></span>
@@ -308,6 +322,36 @@ const template = String.raw`
               <span class="ride-book-button__label">Book Ride</span>
               <span class="ride-book-button__spinner" aria-hidden="true"></span>
             </button>
+            <section class="ride-booked-tips" aria-label="Ride tips">
+              <h2 class="ride-booked-tips__title">Tips</h2>
+              <div class="ride-booked-tips__scroller" aria-label="Ride tips">
+                <article class="ride-booked-tip-card">
+                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                  <span class="ride-booked-tip-card__copy">
+                    <span>Your ride will wait up to 7 minutes</span>
+                    <small>The vehicle will leave after the timer runs out</small>
+                  </span>
+                </article>
+                <article class="ride-booked-tip-card">
+                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                  <span class="ride-booked-tip-card__copy">
+                    <span>Meet your ride at Pickup</span>
+                    <small>Use the walking route to reach the pickup point</small>
+                  </span>
+                </article>
+                <article class="ride-booked-tip-card">
+                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                  <span class="ride-booked-tip-card__copy">
+                    <span>Check the plate before entering</span>
+                    <small>Your plate number is XAI</small>
+                  </span>
+                </article>
+              </div>
+            </section>
+            <div class="ride-booked-actions" aria-label="Ride actions">
+              <button class="ride-booked-action" type="button">Report Issue</button>
+              <button class="ride-booked-action" type="button">Cancel Ride</button>
+            </div>
           </section>
         </div>
       </section>
@@ -1307,6 +1351,7 @@ class RobotaxiMap extends HTMLElement {
     this.activeSearchController = null;
     this.destinationSearchTimeout = null;
     this.destinationViewportSyncTimeout = null;
+    this.rideBookedTimeout = null;
     this.selectedDestination = null;
     this.pendingDestinationKey = null;
     this.routeSelectionToken = 0;
@@ -1335,6 +1380,7 @@ class RobotaxiMap extends HTMLElement {
     this.clearDestinationSearchTimeout();
     this.abortDestinationSearch();
     this.clearDestinationViewportSyncTimeout();
+    this.clearRideBookedTimeout();
     this.clearRideRoute();
 
     if (this.destinationForm) {
@@ -1374,6 +1420,15 @@ class RobotaxiMap extends HTMLElement {
 
     window.clearTimeout(this.destinationViewportSyncTimeout);
     this.destinationViewportSyncTimeout = null;
+  }
+
+  clearRideBookedTimeout() {
+    if (this.rideBookedTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedTimeout);
+    this.rideBookedTimeout = null;
   }
 
   syncSelectedDestinationViewport(animate = false) {
@@ -1548,7 +1603,11 @@ class RobotaxiMap extends HTMLElement {
   };
 
   startBookRideSearch() {
-    if (!this.bookRideButton || this.bookRideButton.classList.contains("is-searching")) {
+    if (
+      !this.bookRideButton ||
+      this.bookRideButton.classList.contains("is-searching") ||
+      this.bookRideButton.classList.contains("is-booked")
+    ) {
       return;
     }
 
@@ -1562,20 +1621,48 @@ class RobotaxiMap extends HTMLElement {
     if (this.bookingEtaText) {
       this.bookingEtaText.textContent = "Searching for nearby vehicles...";
     }
+
+    this.clearRideBookedTimeout();
+    this.rideBookedTimeout = window.setTimeout(() => {
+      this.rideBookedTimeout = null;
+      this.showRideBookedState();
+    }, RIDE_BOOKED_DELAY_MS);
   }
 
   resetBookRideSearchState() {
+    this.clearRideBookedTimeout();
+
     if (this.bookRideButton) {
-      this.bookRideButton.classList.remove("is-searching");
+      this.bookRideButton.classList.remove("is-searching", "is-booked");
       this.bookRideButton.removeAttribute("aria-busy");
     }
 
     if (this.bookingPanel) {
-      this.bookingPanel.classList.remove("is-searching");
+      this.bookingPanel.classList.remove("is-searching", "is-booked");
+    }
+
+    if (this.rideSheet?.dataset.sheetState === "booked") {
+      this.rideSheet.dataset.sheetState = "selected";
     }
 
     if (this.bookingEtaText) {
       this.bookingEtaText.innerHTML = "A ride can arrive in <strong>~ min</strong>";
+    }
+  }
+
+  showRideBookedState() {
+    if (!this.bookRideButton || !this.bookingPanel) {
+      return;
+    }
+
+    this.bookRideButton.classList.remove("is-searching");
+    this.bookRideButton.classList.add("is-booked");
+    this.bookRideButton.removeAttribute("aria-busy");
+    this.bookingPanel.classList.remove("is-searching");
+    this.bookingPanel.classList.add("is-booked");
+
+    if (this.rideSheet) {
+      this.rideSheet.dataset.sheetState = "booked";
     }
   }
 

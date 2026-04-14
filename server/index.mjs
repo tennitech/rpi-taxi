@@ -11,11 +11,14 @@ const DESTINATION_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const DESTINATION_SEARCH_CACHE_LIMIT = 200;
 const DESTINATION_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const ROUTE_CACHE_TTL_MS = 10 * 60 * 1000;
-const ROUTE_TIMEOUT_MS = 20 * 1000;
+const ROUTE_TIMEOUT_MS = 4500;
+const VALHALLA_ROUTE_TIMEOUT_MS = 8000;
+const WALK_ROUTE_TIMEOUT_MS = 900;
 const ROUTE_CACHE_LIMIT = 200;
 const ROUTE_BASE_URL = "https://router.project-osrm.org/route/v1";
 const ROUTE_URL = `${ROUTE_BASE_URL}/driving`;
 const WALK_ROUTE_URL = `${ROUTE_BASE_URL}/foot`;
+const VALHALLA_ROUTE_URL = "https://valhalla1.openstreetmap.de/route";
 const WALK_FALLBACK_METERS_PER_SECOND = 1.35;
 const GEOFENCE_VIEWBOX = createGeofenceViewbox(GEOFENCE_COORDS);
 const destinationSearchCache = new Map();
@@ -211,7 +214,7 @@ async function handleDestinationSearch(requestUrl, response) {
   }
 }
 
-async function fetchOsrmRoute(upstreamUrl, userAgent) {
+async function fetchOsrmRoute(upstreamUrl, userAgent, timeoutMs = ROUTE_TIMEOUT_MS) {
   const cachedPayload = readRouteCache(upstreamUrl);
 
   if (cachedPayload) {
@@ -223,7 +226,7 @@ async function fetchOsrmRoute(upstreamUrl, userAgent) {
       Accept: "application/json",
       "User-Agent": userAgent,
     },
-    signal: AbortSignal.timeout(ROUTE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!upstreamResponse.ok) {
@@ -240,6 +243,136 @@ function getFastestRoute(payload) {
   return routes
     .filter((route) => Number.isFinite(route?.duration))
     .sort((left, right) => left.duration - right.duration)[0];
+}
+
+function decodeValhallaShape(shape) {
+  if (typeof shape !== "string" || shape.length === 0) {
+    return [];
+  }
+
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  const coordinates = [];
+
+  while (index < shape.length) {
+    let shift = 0;
+    let result = 0;
+    let byte = null;
+
+    do {
+      byte = shape.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < shape.length);
+
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    shift = 0;
+    result = 0;
+
+    do {
+      byte = shape.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < shape.length);
+
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coordinates.push([lng * 1e-6, lat * 1e-6]);
+  }
+
+  return coordinates;
+}
+
+async function fetchValhallaDriveRoute({ pickupLat, pickupLng, dropoffLat, dropoffLng }) {
+  const cacheKey = `valhalla:auto:${pickupLat},${pickupLng};${dropoffLat},${dropoffLng}`;
+  const cachedPayload = readRouteCache(cacheKey);
+
+  if (cachedPayload) {
+    return cachedPayload;
+  }
+
+  const requestBody = {
+    costing: "auto",
+    directions_options: {
+      units: "kilometers",
+    },
+    locations: [
+      {
+        lat: pickupLat,
+        lon: pickupLng,
+        type: "break",
+      },
+      {
+        lat: dropoffLat,
+        lon: dropoffLng,
+        type: "break",
+      },
+    ],
+  };
+  const response = await fetch(VALHALLA_ROUTE_URL, {
+    body: JSON.stringify(requestBody),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "RPI Taxi/1.0 (local Valhalla route proxy)",
+    },
+    method: "POST",
+    signal: AbortSignal.timeout(VALHALLA_ROUTE_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Valhalla route upstream failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const shape = payload?.trip?.legs?.[0]?.shape;
+  const coordinates = decodeValhallaShape(shape);
+
+  if (coordinates.length < 2) {
+    throw new Error("Valhalla route geometry unavailable");
+  }
+
+  const firstCoordinate = coordinates[0];
+  const lastCoordinate = coordinates[coordinates.length - 1];
+  const result = {
+    distance: Number(payload?.trip?.summary?.length) * 1000,
+    duration: payload?.trip?.summary?.time,
+    geometry: {
+      coordinates,
+      type: "LineString",
+    },
+    waypoints: [
+      {
+        distance: 0,
+        location: firstCoordinate,
+      },
+      {
+        distance: 0,
+        location: lastCoordinate,
+      },
+    ],
+  };
+
+  writeRouteCache(cacheKey, result);
+  return result;
+}
+
+async function fetchOsrmDriveRoute(upstreamUrl) {
+  const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local ride route proxy)");
+  const fastestRoute = getFastestRoute(payload);
+
+  if (!fastestRoute?.geometry?.coordinates?.length) {
+    throw new Error("No drive route available");
+  }
+
+  return {
+    distance: fastestRoute.distance,
+    duration: fastestRoute.duration,
+    geometry: fastestRoute.geometry,
+    waypoints: Array.isArray(payload?.waypoints) ? payload.waypoints : [],
+  };
 }
 
 async function fetchWalkRoute(origin, pickupWaypoint) {
@@ -262,34 +395,46 @@ async function fetchWalkRoute(origin, pickupWaypoint) {
     steps: "false",
   });
   const upstreamUrl = `${WALK_ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
+  const walkResultCacheKey = `walk-result:${upstreamUrl}`;
+  const cachedWalkResult = readRouteCache(walkResultCacheKey);
+
+  if (cachedWalkResult) {
+    return cachedWalkResult;
+  }
+
+  const fallbackDistance = Number.isFinite(pickupWaypoint.distance) ? pickupWaypoint.distance : 0;
+  const fallbackWalkRoute = {
+    distance: fallbackDistance,
+    duration: fallbackDistance / WALK_FALLBACK_METERS_PER_SECOND,
+    geometry: {
+      coordinates: [
+        [origin.lng, origin.lat],
+        [snappedLng, snappedLat],
+      ],
+      type: "LineString",
+    },
+  };
 
   try {
-    const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local walk route proxy)");
+    const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local walk route proxy)", WALK_ROUTE_TIMEOUT_MS);
     const fastestRoute = getFastestRoute(payload);
 
     if (!fastestRoute?.geometry?.coordinates?.length) {
-      return null;
+      writeRouteCache(walkResultCacheKey, fallbackWalkRoute);
+      return fallbackWalkRoute;
     }
 
-    return {
+    const walkRoute = {
       distance: fastestRoute.distance,
       duration: fastestRoute.duration,
       geometry: fastestRoute.geometry,
     };
-  } catch {
-    const fallbackDistance = Number.isFinite(pickupWaypoint.distance) ? pickupWaypoint.distance : 0;
 
-    return {
-      distance: fallbackDistance,
-      duration: fallbackDistance / WALK_FALLBACK_METERS_PER_SECOND,
-      geometry: {
-        coordinates: [
-          [origin.lng, origin.lat],
-          [snappedLng, snappedLat],
-        ],
-        type: "LineString",
-      },
-    };
+    writeRouteCache(walkResultCacheKey, walkRoute);
+    return walkRoute;
+  } catch {
+    writeRouteCache(walkResultCacheKey, fallbackWalkRoute);
+    return fallbackWalkRoute;
   }
 }
 
@@ -320,19 +465,20 @@ async function fetchRideRoute(requestUrl) {
     steps: "false",
   });
   const upstreamUrl = `${ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
-  const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local ride route proxy)");
-  const fastestRoute = getFastestRoute(payload);
+  let driveRoute;
 
-  if (!fastestRoute?.geometry?.coordinates?.length) {
-    throw new Error("No drive route available");
+  try {
+    driveRoute = await fetchValhallaDriveRoute({ pickupLat, pickupLng, dropoffLat, dropoffLng });
+  } catch {
+    driveRoute = await fetchOsrmDriveRoute(upstreamUrl);
   }
 
-  const waypoints = Array.isArray(payload?.waypoints) ? payload.waypoints : [];
+  const waypoints = Array.isArray(driveRoute?.waypoints) ? driveRoute.waypoints : [];
   const walk = await fetchWalkRoute({ lat: pickupLat, lng: pickupLng }, waypoints[0]);
   const result = {
-    distance: fastestRoute.distance,
-    duration: fastestRoute.duration,
-    geometry: fastestRoute.geometry,
+    distance: driveRoute.distance,
+    duration: driveRoute.duration,
+    geometry: driveRoute.geometry,
     walk,
     waypoints,
   };
