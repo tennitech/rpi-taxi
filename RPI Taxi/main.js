@@ -49,12 +49,16 @@ const LOCATION_PREFERENCE_GRANTED = "granted";
 const LOCATION_PREFERENCE_DENIED = "denied";
 const CURATED_DESTINATION_CACHE_KEY = "rpi_taxi_curated_destinations_v1";
 
-const RIDE_SHEET_ROTATION_INTERVAL_MS = 4200;
 const DESTINATION_SEARCH_DEBOUNCE_MS = 140;
 const SEARCH_RESULT_LIMIT = 10;
 const SEARCH_FALLBACK_TRIGGER_COUNT = 4;
 const DESTINATION_SEARCH_API_URL = "/api/destination-search";
 const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
+const RIDE_ROUTE_API_URL = "/api/ride-route";
+const ROUTE_WALK_THRESHOLD_METERS = 12;
+const ROUTE_WALK_METERS_PER_MINUTE = 80;
+const ROUTE_PULSE_PERIOD_MS = 3900;
+const ROUTE_PULSE_FILL_FRACTION = 0.34;
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
 const DEFAULT_SEARCH_ORIGIN = GEOFENCE.centroid;
 
@@ -267,14 +271,14 @@ const template = String.raw`
           <section class="ride-booking" data-booking-panel hidden aria-label="Ride booking">
             <article class="ride-booking-card" aria-label="Ride summary">
               <header class="ride-booking-card__eta">
-                <span>A ride can arrive in <strong>~ min</strong></span>
+                <span data-booking-eta-text>A ride can arrive in <strong>~ min</strong></span>
               </header>
               <div class="ride-booking-card__route">
                 <div class="ride-booking-stop ride-booking-stop--pickup">
                   <span class="ride-booking-stop__target" aria-hidden="true"></span>
                   <span class="ride-booking-stop__text">
                     <span class="ride-booking-stop__title">Pickup</span>
-                    <span class="ride-booking-stop__subtitle">Tap to edit</span>
+                    <span class="ride-booking-stop__subtitle" data-booking-pickup-subtitle>Tap to edit</span>
                   </span>
                   <span class="ride-booking-stop__time">~ min</span>
                 </div>
@@ -300,7 +304,10 @@ const template = String.raw`
                 <s>$19.56</s>
               </span>
             </div>
-            <button class="ride-book-button" type="button">Book Ride</button>
+            <button class="ride-book-button" type="button" data-book-ride-button>
+              <span class="ride-book-button__label">Book Ride</span>
+              <span class="ride-book-button__spinner" aria-hidden="true"></span>
+            </button>
           </section>
         </div>
       </section>
@@ -470,6 +477,30 @@ function haversineMiles(fromLat, fromLng, toLat, toLng) {
     Math.sin(latDelta / 2) ** 2 +
     Math.cos(startLat) * Math.cos(endLat) * Math.sin(lngDelta / 2) ** 2;
   return earthRadiusMiles * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function haversineMeters(fromLat, fromLng, toLat, toLng) {
+  return haversineMiles(fromLat, fromLng, toLat, toLng) * 1609.344;
+}
+
+function getLatLngDistanceMeters(left, right) {
+  return haversineMeters(left.lat, left.lng, right.lat, right.lng);
+}
+
+function formatWalkTime(distanceMeters) {
+  if (!Number.isFinite(distanceMeters)) {
+    return "";
+  }
+
+  return `${Math.max(1, Math.round(distanceMeters / ROUTE_WALK_METERS_PER_MINUTE))} min walk`;
+}
+
+function formatWalkDuration(durationSeconds) {
+  if (!Number.isFinite(durationSeconds)) {
+    return "";
+  }
+
+  return `${Math.max(1, Math.round(durationSeconds / 60))} min walk`;
 }
 
 function formatDistance(distanceMiles) {
@@ -793,13 +824,25 @@ class RobotaxiMap extends HTMLElement {
     lightLabelsPane.classList.add("leaflet-light-labels-pane");
     lightLabelsPane.style.zIndex = "650";
 
+    const rideRoutePane = this.map.createPane("rideRoutePane");
+    rideRoutePane.classList.add("leaflet-ride-route-pane");
+    rideRoutePane.style.zIndex = "665";
+
     const destinationPane = this.map.createPane("destinationPane");
     destinationPane.classList.add("leaflet-destination-pane");
     destinationPane.style.zIndex = "680";
 
+    const rideRouteMarkerPane = this.map.createPane("rideRouteMarkerPane");
+    rideRouteMarkerPane.classList.add("leaflet-ride-route-marker-pane");
+    rideRouteMarkerPane.style.zIndex = "695";
+
     const userLocationPane = this.map.createPane("userLocationPane");
     userLocationPane.classList.add("leaflet-user-location-pane");
     userLocationPane.style.zIndex = "690";
+
+    const rideRouteHudPane = this.map.createPane("rideRouteHudPane");
+    rideRouteHudPane.classList.add("leaflet-ride-route-hud-pane");
+    rideRouteHudPane.style.zIndex = "700";
 
     this.tileLayers = Object.fromEntries(
       Object.entries(TILE_LAYERS).map(([theme, definitions]) => {
@@ -914,6 +957,27 @@ class RobotaxiMap extends HTMLElement {
         };
       })
       .filter(Boolean);
+    const visibleMapButtonRects = [...this.querySelectorAll(".ride-map-button")]
+      .map((element) => {
+        const style = window.getComputedStyle(element);
+
+        if (element.hidden || style.display === "none" || style.visibility === "hidden") {
+          return null;
+        }
+
+        return getRectIntersection(element.getBoundingClientRect(), mapRect);
+      })
+      .filter(Boolean);
+
+    if (visibleMapButtonRects.length > 0) {
+      const topBandBottom = Math.max(...visibleMapButtonRects.map((rect) => rect.bottom - mapRect.top));
+      occlusionRects.push({
+        left: 0,
+        top: 0,
+        right: mapRect.right - mapRect.left,
+        bottom: topBandBottom,
+      });
+    }
 
     return occlusionRects;
   }
@@ -1004,7 +1068,7 @@ class RobotaxiMap extends HTMLElement {
     );
   }
 
-  getAvailableFitBoundsOptions({ animate = false } = {}) {
+  getAvailableFitBoundsOptions({ animate = false, extraPaddingBottom = 0, extraPaddingTop = 0 } = {}) {
     const fallbackPadding = this.getResponsivePadding();
 
     if (!this.map) {
@@ -1031,11 +1095,11 @@ class RobotaxiMap extends HTMLElement {
       animate,
       paddingBottomRight: [
         Math.round(size.x - primaryRect.right + horizontalPadding),
-        Math.round(size.y - primaryRect.bottom + verticalPadding),
+        Math.round(size.y - primaryRect.bottom + verticalPadding + extraPaddingBottom),
       ],
       paddingTopLeft: [
         Math.round(primaryRect.left + horizontalPadding),
-        Math.round(primaryRect.top + verticalPadding),
+        Math.round(primaryRect.top + verticalPadding + extraPaddingTop),
       ],
     };
   }
@@ -1137,6 +1201,35 @@ class RobotaxiMap extends HTMLElement {
     });
   }
 
+  fitLatLngsInAvailableMap(
+    latLngs,
+    { animate = true, duration = 0.65, extraPaddingBottom = 0, extraPaddingTop = 0, maxZoom = null } = {},
+  ) {
+    if (!this.map || typeof window.L === "undefined") {
+      return;
+    }
+
+    const validLatLngs = latLngs.filter(Boolean);
+    if (validLatLngs.length === 0) {
+      return;
+    }
+
+    if (validLatLngs.length === 1) {
+      this.focusLatLngInAvailableMap(validLatLngs[0], {
+        animate,
+        duration,
+        zoom: Math.max(this.map.getZoom(), 16),
+      });
+      return;
+    }
+
+    this.map.fitBounds(window.L.latLngBounds(validLatLngs), {
+      ...this.getAvailableFitBoundsOptions({ animate, extraPaddingBottom, extraPaddingTop }),
+      duration,
+      ...(Number.isFinite(maxZoom) ? { maxZoom } : {}),
+    });
+  }
+
   updateResponsiveZoomBounds(resetView = false) {
     if (!this.map || !this.geofenceBounds) {
       return;
@@ -1184,8 +1277,11 @@ class RobotaxiMap extends HTMLElement {
     this.destinationCloseButton = this.querySelector("[data-destination-close]");
     this.destinationMenuButton = this.querySelector("[data-destination-menu]");
     this.bookingPanel = this.querySelector("[data-booking-panel]");
+    this.bookingPickupSubtitle = this.querySelector("[data-booking-pickup-subtitle]");
     this.bookingDestinationTitle = this.querySelector("[data-booking-destination-title]");
     this.bookingDestinationSubtitle = this.querySelector("[data-booking-destination-subtitle]");
+    this.bookingEtaText = this.querySelector("[data-booking-eta-text]");
+    this.bookRideButton = this.querySelector("[data-book-ride-button]");
 
     if (
       !this.rideSheet ||
@@ -1195,20 +1291,25 @@ class RobotaxiMap extends HTMLElement {
       !this.destinationForm ||
       !this.destinationCloseButton ||
       !this.bookingPanel ||
+      !this.bookingPickupSubtitle ||
       !this.bookingDestinationTitle ||
-      !this.bookingDestinationSubtitle
+      !this.bookingDestinationSubtitle ||
+      !this.bookingEtaText ||
+      !this.bookRideButton
     ) {
       return;
     }
 
     this.rideSheetReady = true;
-    this.destinationRotationIndex = 0;
+    this.destinationRotationIndex = this.getRandomDestinationRotationIndex();
     this.destinationInputFocused = false;
     this.activeDestinationResults = [];
     this.activeSearchController = null;
     this.destinationSearchTimeout = null;
     this.destinationViewportSyncTimeout = null;
     this.selectedDestination = null;
+    this.pendingDestinationKey = null;
+    this.routeSelectionToken = 0;
 
     this.destinationForm.addEventListener("submit", this.handleDestinationSubmit);
     this.destinationInput.addEventListener("focus", this.handleDestinationFocus);
@@ -1216,6 +1317,8 @@ class RobotaxiMap extends HTMLElement {
     this.destinationInput.addEventListener("input", this.handleDestinationInput);
     this.destinationInput.addEventListener("search", this.handleDestinationInput);
     this.destinationCloseButton.addEventListener("click", this.resetDestinationPicker);
+    this.bookRideButton.addEventListener("pointerup", this.handleBookRideRelease);
+    this.bookRideButton.addEventListener("click", this.handleBookRide);
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", this.handleVisualViewportChange, { passive: true });
@@ -1223,17 +1326,16 @@ class RobotaxiMap extends HTMLElement {
     }
 
     this.renderDefaultDestinations();
-    this.startSuggestionRotation();
     this.updateRideSheetViewport();
     this.updateRideSheetMetrics();
     this.hydrateCuratedDestinations();
   }
 
   teardownRideSheet() {
-    this.stopSuggestionRotation();
     this.clearDestinationSearchTimeout();
     this.abortDestinationSearch();
     this.clearDestinationViewportSyncTimeout();
+    this.clearRideRoute();
 
     if (this.destinationForm) {
       this.destinationForm.removeEventListener("submit", this.handleDestinationSubmit);
@@ -1248,6 +1350,11 @@ class RobotaxiMap extends HTMLElement {
 
     if (this.destinationCloseButton) {
       this.destinationCloseButton.removeEventListener("click", this.resetDestinationPicker);
+    }
+
+    if (this.bookRideButton) {
+      this.bookRideButton.removeEventListener("pointerup", this.handleBookRideRelease);
+      this.bookRideButton.removeEventListener("click", this.handleBookRide);
     }
 
     if (window.visualViewport) {
@@ -1340,7 +1447,6 @@ class RobotaxiMap extends HTMLElement {
 
   handleDestinationFocus = () => {
     this.destinationInputFocused = true;
-    this.stopSuggestionRotation();
     this.renderCurrentResults();
     this.updateRideSheetViewport();
   };
@@ -1351,7 +1457,6 @@ class RobotaxiMap extends HTMLElement {
       this.destinationInputFocused = isStillFocused;
 
       if (!isStillFocused && !this.destinationInput.value.trim()) {
-        this.startSuggestionRotation();
         this.renderDefaultDestinations();
       }
 
@@ -1367,21 +1472,14 @@ class RobotaxiMap extends HTMLElement {
 
     if (!query.trim()) {
       this.renderDefaultDestinations();
-
-      if (!this.destinationInputFocused) {
-        this.startSuggestionRotation();
-      }
-
       return;
     }
 
     if (normalizedQuery.length < 2) {
-      this.stopSuggestionRotation();
       this.renderDefaultDestinations();
       return;
     }
 
-    this.stopSuggestionRotation();
     this.renderResultsMessage("Searching nearby destinations…", { loading: true });
     this.scheduleDestinationSearch(query);
   };
@@ -1395,11 +1493,13 @@ class RobotaxiMap extends HTMLElement {
     }
   };
 
-  renderSelectedDestination(destination) {
-    if (!this.bookingPanel || !this.bookingDestinationTitle || !this.bookingDestinationSubtitle) {
+  renderSelectedDestination(destination, rideRoute = null) {
+    if (!this.bookingPanel || !this.bookingPickupSubtitle || !this.bookingDestinationTitle || !this.bookingDestinationSubtitle) {
       return;
     }
 
+    this.resetBookRideSearchState();
+    this.bookingPickupSubtitle.textContent = rideRoute?.walkTimeText || "Tap to edit";
     this.bookingDestinationTitle.textContent = destination.title || "Destination";
     this.bookingDestinationSubtitle.textContent = destination.subtitle || "Ride zone";
     this.bookingPanel.hidden = false;
@@ -1420,6 +1520,8 @@ class RobotaxiMap extends HTMLElement {
   }
 
   hideSelectedDestination() {
+    this.resetBookRideSearchState();
+
     if (this.bookingPanel) {
       this.bookingPanel.hidden = true;
     }
@@ -1433,6 +1535,50 @@ class RobotaxiMap extends HTMLElement {
     }
   }
 
+  handleBookRideRelease = (event) => {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+
+    this.startBookRideSearch();
+  };
+
+  handleBookRide = () => {
+    this.startBookRideSearch();
+  };
+
+  startBookRideSearch() {
+    if (!this.bookRideButton || this.bookRideButton.classList.contains("is-searching")) {
+      return;
+    }
+
+    this.bookRideButton.classList.add("is-searching");
+    this.bookRideButton.setAttribute("aria-busy", "true");
+
+    if (this.bookingPanel) {
+      this.bookingPanel.classList.add("is-searching");
+    }
+
+    if (this.bookingEtaText) {
+      this.bookingEtaText.textContent = "Searching for nearby vehicles...";
+    }
+  }
+
+  resetBookRideSearchState() {
+    if (this.bookRideButton) {
+      this.bookRideButton.classList.remove("is-searching");
+      this.bookRideButton.removeAttribute("aria-busy");
+    }
+
+    if (this.bookingPanel) {
+      this.bookingPanel.classList.remove("is-searching");
+    }
+
+    if (this.bookingEtaText) {
+      this.bookingEtaText.innerHTML = "A ride can arrive in <strong>~ min</strong>";
+    }
+  }
+
   clearDestinationMarker() {
     if (!this.map || !this.destinationMarker) {
       return;
@@ -1442,13 +1588,41 @@ class RobotaxiMap extends HTMLElement {
     this.destinationMarker = null;
   }
 
+  clearRideRoute() {
+    this.stopRoutePulse();
+
+    [
+      "rideRouteBaseLine",
+      "rideRoutePulseLine",
+      "rideRouteWalkLine",
+      "rideRoutePickupMarker",
+      "rideRouteDropoffMarker",
+      "rideRouteWalkMarker",
+      "rideRoutePickupChipMarker",
+      "rideRouteDropoffChipMarker",
+      "destinationMarker",
+    ].forEach((propertyName) => {
+      const layer = this[propertyName];
+
+      if (this.map && layer) {
+        this.map.removeLayer(layer);
+      }
+
+      this[propertyName] = null;
+    });
+    this.activeRouteLatLngs = [];
+    this.activeRouteMeasures = null;
+  }
+
   resetDestinationPicker = () => {
+    this.routeSelectionToken = (this.routeSelectionToken ?? 0) + 1;
+    this.clearPendingDestination();
     this.selectedDestination = null;
     this.selectedDestinationLatLng = null;
     this.clearDestinationViewportSyncTimeout();
     this.clearDestinationSearchTimeout();
     this.abortDestinationSearch();
-    this.clearDestinationMarker();
+    this.clearRideRoute();
     this.hideSelectedDestination();
 
     if (this.destinationInput) {
@@ -1458,35 +1632,18 @@ class RobotaxiMap extends HTMLElement {
 
     this.destinationInputFocused = false;
     this.renderDefaultDestinations();
-    this.startSuggestionRotation();
     this.setRideSheetState("compact");
     this.updateRideSheetViewport();
     this.updateResponsiveZoomBounds(true);
   };
 
-  startSuggestionRotation() {
-    if (this.destinationRotationInterval || this.destinationInput?.value.trim()) {
-      return;
-    }
-
+  getRandomDestinationRotationIndex() {
     const curatedCount = this.getCuratedDestinations().length;
     if (curatedCount <= 1) {
-      return;
+      return 0;
     }
 
-    this.destinationRotationInterval = window.setInterval(() => {
-      this.destinationRotationIndex = (this.destinationRotationIndex + 1) % curatedCount;
-      this.renderDefaultDestinations();
-    }, RIDE_SHEET_ROTATION_INTERVAL_MS);
-  }
-
-  stopSuggestionRotation() {
-    if (!this.destinationRotationInterval) {
-      return;
-    }
-
-    window.clearInterval(this.destinationRotationInterval);
-    this.destinationRotationInterval = null;
+    return Math.floor(Math.random() * curatedCount);
   }
 
   getCuratedDestinations() {
@@ -1817,10 +1974,59 @@ class RobotaxiMap extends HTMLElement {
     this.updateRideSheetMetrics();
   }
 
+  getDestinationKey(destination) {
+    if (!destination) {
+      return "";
+    }
+
+    const lat = Number.isFinite(destination.lat) ? destination.lat.toFixed(5) : "";
+    const lng = Number.isFinite(destination.lng) ? destination.lng.toFixed(5) : "";
+    return [destination.id ?? "", normalizeQuery(destination.title), normalizeQuery(destination.subtitle), lat, lng].join("|");
+  }
+
+  setPendingDestination(destination) {
+    this.pendingDestinationKey = this.getDestinationKey(destination);
+    this.updateDestinationPendingRows();
+  }
+
+  clearPendingDestination(destination = null) {
+    const destinationKey = typeof destination === "string" ? destination : this.getDestinationKey(destination);
+
+    if (destination && this.pendingDestinationKey !== destinationKey) {
+      return;
+    }
+
+    this.pendingDestinationKey = null;
+    this.updateDestinationPendingRows();
+  }
+
+  updateDestinationPendingRows() {
+    if (!this.destinationResults) {
+      return;
+    }
+
+    this.destinationResults.querySelectorAll(".ride-destination").forEach((row) => {
+      const isPending = Boolean(this.pendingDestinationKey && row.dataset.destinationKey === this.pendingDestinationKey);
+      row.classList.toggle("is-routing", isPending);
+
+      if (isPending) {
+        row.setAttribute("aria-busy", "true");
+      } else {
+        row.removeAttribute("aria-busy");
+      }
+    });
+  }
+
   createDestinationRow(destination) {
     const row = document.createElement("button");
     row.className = "ride-destination";
     row.type = "button";
+    row.dataset.destinationKey = this.getDestinationKey(destination);
+
+    if (this.pendingDestinationKey && row.dataset.destinationKey === this.pendingDestinationKey) {
+      row.classList.add("is-routing");
+      row.setAttribute("aria-busy", "true");
+    }
 
     const icon = document.createElement("img");
     icon.className = "ride-destination__icon";
@@ -1845,6 +2051,21 @@ class RobotaxiMap extends HTMLElement {
     distance.textContent = formatDistance(this.getDistanceFromOrigin(destination.lat, destination.lng));
 
     row.append(icon, textWrap, distance);
+    row.addEventListener("pointerdown", (event) => {
+      if (!event.isPrimary || event.button !== 0) {
+        return;
+      }
+
+      this.setPendingDestination(destination);
+    });
+    row.addEventListener("pointercancel", () => {
+      this.clearPendingDestination(destination);
+    });
+    row.addEventListener("pointerleave", (event) => {
+      if (event.buttons > 0) {
+        this.clearPendingDestination(destination);
+      }
+    });
     row.addEventListener("click", () => {
       this.selectDestination(destination);
     });
@@ -1899,59 +2120,428 @@ class RobotaxiMap extends HTMLElement {
     return DEFAULT_SEARCH_ORIGIN;
   }
 
+  async fetchRideRoute(originLatLng, destinationLatLng) {
+    const searchParams = new URLSearchParams({
+      dropoffLat: String(destinationLatLng.lat),
+      dropoffLng: String(destinationLatLng.lng),
+      pickupLat: String(originLatLng.lat),
+      pickupLng: String(originLatLng.lng),
+    });
+    const response = await fetch(`${RIDE_ROUTE_API_URL}?${searchParams.toString()}`, {
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Route failed with status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const routeCoordinates = payload?.geometry?.coordinates;
+
+    if (!Array.isArray(routeCoordinates) || routeCoordinates.length < 2) {
+      throw new Error("Route geometry unavailable");
+    }
+
+    const routeLatLngs = routeCoordinates
+      .map((coordinate) => {
+        const [lng, lat] = coordinate;
+        return Number.isFinite(lat) && Number.isFinite(lng) ? window.L.latLng(lat, lng) : null;
+      })
+      .filter(Boolean);
+    const pickupWaypoint = payload?.waypoints?.[0];
+    const dropoffWaypoint = payload?.waypoints?.[1];
+    const pickupLatLng = this.getWaypointLatLng(pickupWaypoint) ?? routeLatLngs[0] ?? originLatLng;
+    const dropoffLatLng =
+      this.getWaypointLatLng(dropoffWaypoint) ?? routeLatLngs[routeLatLngs.length - 1] ?? destinationLatLng;
+    const walkDistanceMeters = Number.isFinite(pickupWaypoint?.distance)
+      ? pickupWaypoint.distance
+      : getLatLngDistanceMeters(originLatLng, pickupLatLng);
+    const walkDurationSeconds = Number.isFinite(payload?.walk?.duration) ? payload.walk.duration : null;
+    const walkRouteLatLngs = Array.isArray(payload?.walk?.geometry?.coordinates)
+      ? payload.walk.geometry.coordinates
+          .map((coordinate) => {
+            const [lng, lat] = coordinate;
+            return Number.isFinite(lat) && Number.isFinite(lng) ? window.L.latLng(lat, lng) : null;
+          })
+          .filter(Boolean)
+      : [];
+
+    return {
+      distanceMeters: payload.distance,
+      dropoffLatLng,
+      durationSeconds: payload.duration,
+      originLatLng,
+      pickupLatLng,
+      routeLatLngs,
+      walkDurationSeconds,
+      walkDistanceMeters,
+      walkRouteLatLngs,
+      walkTimeText: formatWalkDuration(walkDurationSeconds) || formatWalkTime(walkDistanceMeters),
+    };
+  }
+
+  getWaypointLatLng(waypoint) {
+    const location = waypoint?.location;
+
+    if (!Array.isArray(location) || location.length < 2 || typeof window.L === "undefined") {
+      return null;
+    }
+
+    const [lng, lat] = location;
+    return Number.isFinite(lat) && Number.isFinite(lng) ? window.L.latLng(lat, lng) : null;
+  }
+
   async selectDestination(destination) {
-    const resolvedDestination = await this.resolveDestinationCoordinates(destination);
-    const shouldWaitForViewportUpdate = this.destinationInputFocused;
-    const latLng =
+    const selectionToken = (this.routeSelectionToken ?? 0) + 1;
+    const pendingDestinationKey = this.getDestinationKey(destination);
+    this.routeSelectionToken = selectionToken;
+    this.setPendingDestination(destination);
+    this.clearDestinationSearchTimeout();
+    this.abortDestinationSearch();
+    this.clearRideRoute();
+
+    let resolvedDestination;
+
+    try {
+      resolvedDestination = await this.resolveDestinationCoordinates(destination);
+    } catch (error) {
+      if (this.routeSelectionToken === selectionToken) {
+        this.clearPendingDestination(pendingDestinationKey);
+      }
+
+      console.error("Destination coordinates failed.", error);
+      return;
+    }
+
+    if (this.routeSelectionToken !== selectionToken) {
+      return;
+    }
+
+    const destinationLatLng =
       this.map && typeof window.L !== "undefined"
         ? window.L.latLng(resolvedDestination.lat, resolvedDestination.lng)
         : null;
 
-    this.selectedDestinationLatLng = latLng;
-    this.stopSuggestionRotation();
-    this.clearDestinationSearchTimeout();
-    this.abortDestinationSearch();
+    if (!this.map || !destinationLatLng) {
+      this.clearPendingDestination(pendingDestinationKey);
+      return;
+    }
+
+    const origin = this.getSearchOrigin();
+    const originLatLng = window.L.latLng(origin.lat, origin.lng);
+    let rideRoute;
+
+    try {
+      rideRoute = await this.fetchRideRoute(originLatLng, destinationLatLng);
+    } catch (error) {
+      if (this.routeSelectionToken === selectionToken) {
+        this.clearPendingDestination(pendingDestinationKey);
+      }
+
+      console.error("Ride route failed.", error);
+      return;
+    }
+
+    if (this.routeSelectionToken !== selectionToken) {
+      return;
+    }
 
     if (this.destinationInput) {
       this.destinationInput.value = resolvedDestination.title;
       this.destinationInput.blur();
     }
 
-    const showSelectedDestination = () => {
-      this.selectedDestination = resolvedDestination;
-      this.renderSelectedDestination(resolvedDestination);
-    };
+    this.clearDestinationViewportSyncTimeout();
+    this.clearPendingDestination(pendingDestinationKey);
+    this.selectedDestination = resolvedDestination;
+    this.selectedDestinationLatLng = rideRoute.dropoffLatLng;
+    this.renderRideRoute(rideRoute);
+    this.renderSelectedDestination(resolvedDestination, rideRoute);
+    this.fitLatLngsInAvailableMap(this.getRouteFocusLatLngs(rideRoute), {
+      animate: true,
+      duration: 0.65,
+      extraPaddingBottom: 68,
+      extraPaddingTop: 68,
+      maxZoom: 14.25,
+    });
+  }
 
-    if (this.map && latLng) {
-      const targetZoom = Math.max(this.map.getZoom(), 16);
-      this.renderDestinationMarker(latLng);
-      this.clearDestinationViewportSyncTimeout();
-
-      const focusSelection = () => {
-        this.destinationViewportSyncTimeout = null;
-
-        if (!this.selectedDestinationLatLng || !this.selectedDestinationLatLng.equals(latLng)) {
-          return;
-        }
-
-        this.focusLatLngInAvailableMap(latLng, {
-          animate: true,
-          duration: 0.65,
-          zoom: targetZoom,
-        });
-        showSelectedDestination();
-      };
-
-      if (shouldWaitForViewportUpdate) {
-        this.destinationViewportSyncTimeout = window.setTimeout(focusSelection, 120);
-      } else {
-        focusSelection();
-      }
-
+  renderRideRoute(rideRoute) {
+    if (!this.map || typeof window.L === "undefined") {
       return;
     }
 
-    showSelectedDestination();
+    this.clearRideRoute();
+    const routeLatLngs =
+      Array.isArray(rideRoute.routeLatLngs) && rideRoute.routeLatLngs.length >= 2
+        ? rideRoute.routeLatLngs
+        : [];
+
+    if (routeLatLngs.length < 2) {
+      return;
+    }
+
+    this.activeRouteLatLngs = routeLatLngs;
+    this.rideRouteBaseLine = window.L.polyline(routeLatLngs, {
+      color: "#7c7c7c",
+      interactive: false,
+      lineCap: "round",
+      lineJoin: "round",
+      opacity: 0.96,
+      pane: "rideRoutePane",
+      smoothFactor: 1,
+      weight: 6,
+    }).addTo(this.map);
+
+    this.rideRoutePulseLine = window.L.polyline([], {
+      color: "#ffffff",
+      interactive: false,
+      lineCap: "round",
+      lineJoin: "round",
+      opacity: 0,
+      pane: "rideRoutePane",
+      smoothFactor: 1,
+      weight: 6,
+    }).addTo(this.map);
+
+    this.rideRoutePickupMarker = this.createRidePointMarker(rideRoute.pickupLatLng, "Pickup");
+    this.rideRouteDropoffMarker = this.createRidePointMarker(rideRoute.dropoffLatLng, "Dropoff");
+    this.renderWalkToPickup(rideRoute);
+    this.renderRouteChips(rideRoute);
+    this.startRoutePulse(routeLatLngs);
+  }
+
+  createRidePointMarker(latLng, label) {
+    if (!latLng || !this.map || typeof window.L === "undefined") {
+      return null;
+    }
+
+    return window.L.marker(latLng, {
+      icon: window.L.divIcon({
+        className: "ride-route-point-marker",
+        html: `<span class="ride-route-point-marker__dot" aria-label="${label} point"></span>`,
+        iconAnchor: [9, 9],
+        iconSize: [18, 18],
+      }),
+      interactive: false,
+      keyboard: false,
+      pane: "rideRouteMarkerPane",
+    }).addTo(this.map);
+  }
+
+  renderWalkToPickup(rideRoute) {
+    if (
+      !this.map ||
+      !rideRoute.originLatLng ||
+      !rideRoute.pickupLatLng ||
+      !Number.isFinite(rideRoute.walkDistanceMeters) ||
+      rideRoute.walkDistanceMeters < ROUTE_WALK_THRESHOLD_METERS ||
+      typeof window.L === "undefined"
+    ) {
+      return;
+    }
+
+    const walkLatLngs =
+      Array.isArray(rideRoute.walkRouteLatLngs) && rideRoute.walkRouteLatLngs.length >= 2
+        ? rideRoute.walkRouteLatLngs
+        : [rideRoute.originLatLng, rideRoute.pickupLatLng];
+
+    this.rideRouteWalkLine = window.L.polyline(walkLatLngs, {
+      color: "#ffffff",
+      dashArray: "2 8",
+      interactive: false,
+      lineCap: "round",
+      opacity: 0.38,
+      pane: "rideRoutePane",
+      weight: 3,
+    }).addTo(this.map);
+  }
+
+  renderRouteChips(rideRoute) {
+    if (!this.map || typeof window.L === "undefined") {
+      return;
+    }
+
+    if (rideRoute.dropoffLatLng) {
+      this.rideRouteDropoffChipMarker = window.L.marker(rideRoute.dropoffLatLng, {
+        icon: window.L.divIcon({
+          className: "ride-route-location-marker ride-route-location-marker--dropoff",
+          html: `
+            <span class="ride-route-location-chip ride-route-location-chip--dropoff">
+              <span class="ride-route-location-chip__label">Drop-Off</span>
+              <span class="ride-route-location-chip__chevron" aria-hidden="true">
+                <span class="ride-route-location-chip__chevron-icon"></span>
+              </span>
+            </span>
+          `,
+          iconAnchor: [0, 0],
+          iconSize: [0, 0],
+        }),
+        interactive: false,
+        keyboard: false,
+        pane: "rideRouteHudPane",
+      }).addTo(this.map);
+    }
+
+    if (!rideRoute.pickupLatLng) {
+      return;
+    }
+
+    const hasWalk =
+      rideRoute.originLatLng &&
+      Number.isFinite(rideRoute.walkDistanceMeters) &&
+      rideRoute.walkDistanceMeters >= ROUTE_WALK_THRESHOLD_METERS;
+    const pickupChipLatLng = rideRoute.pickupLatLng;
+    const pickupMainText = rideRoute.walkTimeText || "1 min walk";
+
+    this.rideRoutePickupChipMarker = window.L.marker(pickupChipLatLng, {
+      icon: window.L.divIcon({
+        className: "ride-route-location-marker ride-route-location-marker--pickup",
+        html: `
+          <span class="ride-route-location-chip ride-route-location-chip--pickup">
+            <span class="ride-route-location-chip__walk-cell" aria-hidden="true">
+              <span class="ride-route-location-chip__walk-icon"></span>
+            </span>
+            <span class="ride-route-location-chip__text">
+              <span class="ride-route-location-chip__label">${pickupMainText}</span>
+              <span class="ride-route-location-chip__subtext">to Pickup</span>
+            </span>
+            <span class="ride-route-location-chip__chevron" aria-hidden="true">
+              <span class="ride-route-location-chip__chevron-icon"></span>
+            </span>
+          </span>
+        `,
+        iconAnchor: [0, 0],
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+      keyboard: false,
+      pane: "rideRouteHudPane",
+    }).addTo(this.map);
+  }
+
+  getRouteFocusLatLngs(rideRoute) {
+    return [
+      ...(rideRoute.routeLatLngs ?? []),
+      rideRoute.originLatLng,
+      rideRoute.pickupLatLng,
+      rideRoute.dropoffLatLng,
+    ].filter(Boolean);
+  }
+
+  startRoutePulse(routeLatLngs) {
+    this.stopRoutePulse();
+
+    if (!Array.isArray(routeLatLngs) || routeLatLngs.length < 2 || !this.rideRoutePulseLine) {
+      return;
+    }
+
+    const measures = this.getRouteMeasures(routeLatLngs);
+    if (measures.totalMeters <= 0) {
+      return;
+    }
+
+    this.activeRouteMeasures = measures;
+
+    const animatePulse = (timestamp) => {
+      if (!this.rideRoutePulseLine || !this.activeRouteMeasures) {
+        return;
+      }
+
+      if (!this.routePulseStartTime) {
+        this.routePulseStartTime = timestamp;
+      }
+
+      const elapsed = (timestamp - this.routePulseStartTime) % ROUTE_PULSE_PERIOD_MS;
+      const progress = elapsed / ROUTE_PULSE_PERIOD_MS;
+      const fillProgress = Math.min(progress / ROUTE_PULSE_FILL_FRACTION, 1);
+      const fadeProgress =
+        progress > ROUTE_PULSE_FILL_FRACTION
+          ? 1 - (progress - ROUTE_PULSE_FILL_FRACTION) / (1 - ROUTE_PULSE_FILL_FRACTION)
+          : 1;
+      const visibleLatLngs =
+        fillProgress >= 1
+          ? routeLatLngs
+          : this.getRouteSegment(routeLatLngs, measures, 0, measures.totalMeters * Math.pow(fillProgress, 1.08));
+
+      this.rideRoutePulseLine.setLatLngs(visibleLatLngs);
+      this.rideRoutePulseLine.setStyle({
+        opacity: Math.max(0, Math.min(0.9, fadeProgress * 0.9)),
+      });
+      this.routePulseAnimationFrame = window.requestAnimationFrame(animatePulse);
+    };
+
+    this.routePulseStartTime = null;
+    this.routePulseAnimationFrame = window.requestAnimationFrame(animatePulse);
+  }
+
+  stopRoutePulse() {
+    if (this.routePulseAnimationFrame) {
+      window.cancelAnimationFrame(this.routePulseAnimationFrame);
+    }
+
+    this.routePulseAnimationFrame = null;
+    this.routePulseStartTime = null;
+  }
+
+  getRouteMeasures(routeLatLngs) {
+    const cumulativeMeters = [0];
+    let totalMeters = 0;
+
+    for (let index = 1; index < routeLatLngs.length; index += 1) {
+      totalMeters += getLatLngDistanceMeters(routeLatLngs[index - 1], routeLatLngs[index]);
+      cumulativeMeters.push(totalMeters);
+    }
+
+    return { cumulativeMeters, totalMeters };
+  }
+
+  getRoutePointAtDistance(routeLatLngs, measures, distanceMeters) {
+    const targetDistance = clampNumber(distanceMeters, 0, measures.totalMeters);
+
+    for (let index = 1; index < measures.cumulativeMeters.length; index += 1) {
+      const segmentStartDistance = measures.cumulativeMeters[index - 1];
+      const segmentEndDistance = measures.cumulativeMeters[index];
+
+      if (targetDistance > segmentEndDistance) {
+        continue;
+      }
+
+      const segmentDistance = Math.max(0.001, segmentEndDistance - segmentStartDistance);
+      const segmentProgress = (targetDistance - segmentStartDistance) / segmentDistance;
+      return this.interpolateBetweenLatLngs(routeLatLngs[index - 1], routeLatLngs[index], segmentProgress);
+    }
+
+    return routeLatLngs[routeLatLngs.length - 1];
+  }
+
+  getRouteSegment(routeLatLngs, measures, startDistance, endDistance) {
+    if (endDistance <= 0) {
+      return [];
+    }
+
+    const segment = [this.getRoutePointAtDistance(routeLatLngs, measures, startDistance)];
+
+    for (let index = 1; index < routeLatLngs.length - 1; index += 1) {
+      const distance = measures.cumulativeMeters[index];
+
+      if (distance > startDistance && distance < endDistance) {
+        segment.push(routeLatLngs[index]);
+      }
+    }
+
+    segment.push(this.getRoutePointAtDistance(routeLatLngs, measures, endDistance));
+    return segment;
+  }
+
+  interpolateBetweenLatLngs(startLatLng, endLatLng, progress) {
+    const safeProgress = clampNumber(progress, 0, 1);
+    return window.L.latLng(
+      startLatLng.lat + (endLatLng.lat - startLatLng.lat) * safeProgress,
+      startLatLng.lng + (endLatLng.lng - startLatLng.lng) * safeProgress,
+    );
   }
 
   renderDestinationMarker(latLng) {

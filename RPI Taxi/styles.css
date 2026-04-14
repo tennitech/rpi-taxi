@@ -346,6 +346,9 @@ robotaxi-map,
 .leaflet-geofence-mask-pane,
 .leaflet-geofence-border-pane,
 .leaflet-destination-pane,
+.leaflet-ride-route-hud-pane,
+.leaflet-ride-route-marker-pane,
+.leaflet-ride-route-pane,
 .leaflet-user-location-pane {
   pointer-events: none;
 }
@@ -623,6 +626,7 @@ robotaxi-map,
 }
 
 .ride-booking-card__eta {
+  position: relative;
   display: grid;
   place-items: center;
   min-height: 4.08rem;
@@ -634,6 +638,33 @@ robotaxi-map,
   font-weight: 600;
   letter-spacing: 0;
   text-align: center;
+}
+
+.ride-booking-card__eta::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 42%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.06) 16%,
+    rgba(255, 255, 255, 0.18) 36%,
+    rgba(255, 255, 255, 0.46) 68%,
+    rgba(255, 255, 255, 0.98) 100%
+  );
+  filter: blur(0.35px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-110%) scaleX(1);
+  transform-origin: center;
+}
+
+.ride-booking.is-searching .ride-booking-card__eta::after {
+  opacity: 1;
+  animation: ride-booking-divider-pulse 2250ms cubic-bezier(0.36, 0, 0.18, 1) infinite;
 }
 
 .ride-booking-card__eta strong {
@@ -831,6 +862,7 @@ robotaxi-map,
 }
 
 .ride-book-button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -854,7 +886,62 @@ robotaxi-map,
 }
 
 .ride-book-button:active {
+  background:
+    radial-gradient(circle at 70% 48%, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.03) 20%, rgba(255, 255, 255, 0) 48%),
+    linear-gradient(90deg, #231f17 0%, #30271c 36%, #3e382f 72%, #352d21 100%);
+  border-color: rgba(100, 88, 70, 0.72);
+  color: rgba(245, 245, 246, 0.36);
   transform: scale(0.992);
+}
+
+.ride-book-button:active .ride-book-button__label {
+  opacity: 0.32;
+}
+
+.ride-book-button.is-searching {
+  cursor: default;
+}
+
+.ride-book-button__label {
+  grid-area: 1 / 1;
+  transition: opacity 120ms ease;
+}
+
+.ride-book-button__spinner {
+  grid-area: 1 / 1;
+  width: 1.72rem;
+  height: 1.72rem;
+  border-radius: 50%;
+  background: conic-gradient(
+    from -36deg,
+    rgba(255, 255, 255, 0) 0deg,
+    rgba(255, 255, 255, 0) 88deg,
+    rgba(255, 255, 255, 0.08) 124deg,
+    rgba(255, 255, 255, 0.22) 168deg,
+    rgba(255, 255, 255, 0.4) 214deg,
+    rgba(255, 255, 255, 0.64) 266deg,
+    rgba(255, 255, 255, 0.9) 318deg,
+    rgba(255, 255, 255, 0.42) 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 0.28rem), #000 calc(100% - 0.28rem + 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 0.28rem), #000 calc(100% - 0.28rem + 1px));
+  filter: blur(0.35px);
+  opacity: 0;
+  animation: ride-results-spinner-spin 860ms linear infinite;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.ride-book-button.is-searching .ride-book-button__label {
+  opacity: 0;
+}
+
+.ride-book-button.is-searching .ride-book-button__spinner {
+  opacity: 0.82;
+}
+
+.ride-book-button.is-searching:active .ride-book-button__spinner {
+  opacity: 0.34;
 }
 
 .ride-results {
@@ -893,8 +980,8 @@ robotaxi-map,
 }
 
 .ride-results__spinner {
-  width: 2.18rem;
-  height: 2.18rem;
+  width: 1.98rem;
+  height: 1.98rem;
   border-radius: 50%;
   background: conic-gradient(
     from -36deg,
@@ -907,10 +994,10 @@ robotaxi-map,
     rgba(186, 188, 194, 0.43) 318deg,
     rgba(186, 188, 194, 0.18) 360deg
   );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 0.24rem), #000 calc(100% - 0.24rem + 1px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 0.24rem), #000 calc(100% - 0.24rem + 1px));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 0.32rem), #000 calc(100% - 0.32rem + 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 0.32rem), #000 calc(100% - 0.32rem + 1px));
   filter: blur(0.95px);
-  animation: ride-results-spinner-spin 800ms linear infinite;
+  animation: ride-results-spinner-spin 860ms linear infinite;
   will-change: transform;
 }
 
@@ -932,6 +1019,36 @@ robotaxi-map,
   }
 }
 
+@keyframes ride-booking-divider-pulse {
+  0% {
+    opacity: 0;
+    transform: translateX(-110%) scaleX(1);
+  }
+
+  6% {
+    opacity: 1;
+  }
+
+  42% {
+    opacity: 1;
+    transform: translateX(248%) scaleX(1);
+  }
+
+  50% {
+    opacity: 0.86;
+    transform: translateX(248%) scaleX(-1);
+  }
+
+  56% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(-110%) scaleX(-1);
+  }
+}
+
 .ride-destination {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -944,10 +1061,39 @@ robotaxi-map,
   background: transparent;
   color: inherit;
   text-align: left;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.ride-destination:active {
-  background: rgba(255, 255, 255, 0.04);
+.ride-destination:focus {
+  outline: none;
+}
+
+.ride-destination:active,
+.ride-destination.is-routing {
+  background: transparent;
+}
+
+.ride-destination:active .ride-destination__icon,
+.ride-destination:active .ride-destination__title,
+.ride-destination:active .ride-destination__subtitle,
+.ride-destination:active .ride-destination__distance,
+.ride-destination.is-routing .ride-destination__icon,
+.ride-destination.is-routing .ride-destination__title,
+.ride-destination.is-routing .ride-destination__subtitle,
+.ride-destination.is-routing .ride-destination__distance {
+  opacity: 0.44;
+}
+
+.ride-destination:active .ride-destination__title,
+.ride-destination.is-routing .ride-destination__title {
+  color: rgba(242, 243, 245, 0.62);
+}
+
+.ride-destination:active .ride-destination__subtitle,
+.ride-destination:active .ride-destination__distance,
+.ride-destination.is-routing .ride-destination__subtitle,
+.ride-destination.is-routing .ride-destination__distance {
+  color: rgba(182, 187, 196, 0.54);
 }
 
 .ride-destination__icon {
@@ -991,6 +1137,127 @@ robotaxi-map,
   font-weight: 500;
   letter-spacing: 0.014em;
   white-space: nowrap;
+}
+
+.ride-route-point-marker {
+  background: transparent;
+  border: 0;
+}
+
+.ride-route-point-marker__dot {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  background: #454f50;
+  box-shadow:
+    0 5px 16px rgba(0, 0, 0, 0.28),
+    0 0 0 1px rgba(8, 9, 10, 0.2);
+}
+
+.ride-route-location-marker {
+  background: transparent;
+  border: 0;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: visible;
+}
+
+.ride-route-location-chip {
+  position: absolute;
+  bottom: 0.78rem;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.36rem;
+  min-width: 0;
+  min-height: 2.24rem;
+  padding: 0.34rem 0.38rem 0.34rem 0.66rem;
+  border: 1px solid #ffffff;
+  border-radius: 8px;
+  background: rgba(56, 54, 57, 0.76);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24);
+  transform: translateX(-50%);
+  backdrop-filter: blur(1.5px) saturate(106%);
+  -webkit-backdrop-filter: blur(1.5px) saturate(106%);
+}
+
+.ride-route-location-chip--dropoff {
+  min-height: 2.64rem;
+  padding: 0.5rem 0.42rem 0.5rem 0.82rem;
+}
+
+.ride-route-location-chip--pickup {
+  min-height: 2.98rem;
+  padding: 0.36rem 0.42rem 0.36rem 0.3rem;
+}
+
+.ride-route-location-chip__walk-cell {
+  display: grid;
+  place-items: center;
+  align-self: center;
+  width: 2.42rem;
+  height: 2.42rem;
+  border-radius: 8px;
+  background: #383639;
+}
+
+.ride-route-location-chip__walk-icon {
+  display: block;
+  width: 1.5rem;
+  height: 1.82rem;
+  background: #ffffff;
+  -webkit-mask: url("./icons/04-walk.svg") center / contain no-repeat;
+  mask: url("./icons/04-walk.svg") center / contain no-repeat;
+}
+
+.ride-route-location-chip__text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.08rem;
+}
+
+.ride-route-location-chip__label {
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.ride-route-location-chip--dropoff .ride-route-location-chip__label {
+  font-size: 0.96rem;
+}
+
+.ride-route-location-chip__subtext {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.ride-route-location-chip__chevron {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.36rem;
+  height: 1.36rem;
+  border-radius: 50%;
+  background: #343434;
+}
+
+.ride-route-location-chip__chevron-icon {
+  display: block;
+  width: 0.78rem;
+  height: 0.78rem;
+  background: #ffffff;
+  transform: rotate(180deg);
+  -webkit-mask: url("./icons/05-chevron-left.svg") center / contain no-repeat;
+  mask: url("./icons/05-chevron-left.svg") center / contain no-repeat;
 }
 
 .user-location-marker {

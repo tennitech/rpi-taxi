@@ -10,8 +10,16 @@ const fontsDir = path.join(projectRoot, "fonts");
 const DESTINATION_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const DESTINATION_SEARCH_CACHE_LIMIT = 200;
 const DESTINATION_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
+const ROUTE_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROUTE_TIMEOUT_MS = 20 * 1000;
+const ROUTE_CACHE_LIMIT = 200;
+const ROUTE_BASE_URL = "https://router.project-osrm.org/route/v1";
+const ROUTE_URL = `${ROUTE_BASE_URL}/driving`;
+const WALK_ROUTE_URL = `${ROUTE_BASE_URL}/foot`;
+const WALK_FALLBACK_METERS_PER_SECOND = 1.35;
 const GEOFENCE_VIEWBOX = createGeofenceViewbox(GEOFENCE_COORDS);
 const destinationSearchCache = new Map();
+const routeCache = new Map();
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -51,6 +59,11 @@ function clampInteger(value, fallback, min, max) {
   }
 
   return Math.min(Math.max(parsedValue, min), max);
+}
+
+function parseCoordinate(value) {
+  const coordinate = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(coordinate) ? coordinate : null;
 }
 
 function createGeofenceViewbox(coords) {
@@ -102,6 +115,37 @@ function writeDestinationSearchCache(cacheKey, payload) {
   const oldestKey = destinationSearchCache.keys().next().value;
   if (oldestKey) {
     destinationSearchCache.delete(oldestKey);
+  }
+}
+
+function readRouteCache(cacheKey) {
+  const cachedEntry = routeCache.get(cacheKey);
+
+  if (!cachedEntry) {
+    return null;
+  }
+
+  if (cachedEntry.expiresAt <= Date.now()) {
+    routeCache.delete(cacheKey);
+    return null;
+  }
+
+  return cachedEntry.payload;
+}
+
+function writeRouteCache(cacheKey, payload) {
+  routeCache.set(cacheKey, {
+    expiresAt: Date.now() + ROUTE_CACHE_TTL_MS,
+    payload,
+  });
+
+  if (routeCache.size <= ROUTE_CACHE_LIMIT) {
+    return;
+  }
+
+  const oldestKey = routeCache.keys().next().value;
+  if (oldestKey) {
+    routeCache.delete(oldestKey);
   }
 }
 
@@ -167,6 +211,149 @@ async function handleDestinationSearch(requestUrl, response) {
   }
 }
 
+async function fetchOsrmRoute(upstreamUrl, userAgent) {
+  const cachedPayload = readRouteCache(upstreamUrl);
+
+  if (cachedPayload) {
+    return cachedPayload;
+  }
+
+  const upstreamResponse = await fetch(upstreamUrl, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": userAgent,
+    },
+    signal: AbortSignal.timeout(ROUTE_TIMEOUT_MS),
+  });
+
+  if (!upstreamResponse.ok) {
+    throw new Error(`Route upstream failed with status ${upstreamResponse.status}`);
+  }
+
+  const payload = await upstreamResponse.json();
+  writeRouteCache(upstreamUrl, payload);
+  return payload;
+}
+
+function getFastestRoute(payload) {
+  const routes = Array.isArray(payload?.routes) ? payload.routes : [];
+  return routes
+    .filter((route) => Number.isFinite(route?.duration))
+    .sort((left, right) => left.duration - right.duration)[0];
+}
+
+async function fetchWalkRoute(origin, pickupWaypoint) {
+  const snappedLocation = pickupWaypoint?.location;
+
+  if (!Array.isArray(snappedLocation) || snappedLocation.length < 2) {
+    return null;
+  }
+
+  const [snappedLng, snappedLat] = snappedLocation;
+  if (!Number.isFinite(snappedLat) || !Number.isFinite(snappedLng)) {
+    return null;
+  }
+
+  const coordinates = `${origin.lng},${origin.lat};${snappedLng},${snappedLat}`;
+  const searchParams = new URLSearchParams({
+    alternatives: "false",
+    geometries: "geojson",
+    overview: "full",
+    steps: "false",
+  });
+  const upstreamUrl = `${WALK_ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
+
+  try {
+    const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local walk route proxy)");
+    const fastestRoute = getFastestRoute(payload);
+
+    if (!fastestRoute?.geometry?.coordinates?.length) {
+      return null;
+    }
+
+    return {
+      distance: fastestRoute.distance,
+      duration: fastestRoute.duration,
+      geometry: fastestRoute.geometry,
+    };
+  } catch {
+    const fallbackDistance = Number.isFinite(pickupWaypoint.distance) ? pickupWaypoint.distance : 0;
+
+    return {
+      distance: fallbackDistance,
+      duration: fallbackDistance / WALK_FALLBACK_METERS_PER_SECOND,
+      geometry: {
+        coordinates: [
+          [origin.lng, origin.lat],
+          [snappedLng, snappedLat],
+        ],
+        type: "LineString",
+      },
+    };
+  }
+}
+
+async function fetchRideRoute(requestUrl) {
+  const pickupLat = parseCoordinate(requestUrl.searchParams.get("pickupLat"));
+  const pickupLng = parseCoordinate(requestUrl.searchParams.get("pickupLng"));
+  const dropoffLat = parseCoordinate(requestUrl.searchParams.get("dropoffLat"));
+  const dropoffLng = parseCoordinate(requestUrl.searchParams.get("dropoffLng"));
+
+  if (
+    pickupLat === null ||
+    pickupLng === null ||
+    dropoffLat === null ||
+    dropoffLng === null ||
+    Math.abs(pickupLat) > 90 ||
+    Math.abs(dropoffLat) > 90 ||
+    Math.abs(pickupLng) > 180 ||
+    Math.abs(dropoffLng) > 180
+  ) {
+    throw new Error("Invalid route coordinates");
+  }
+
+  const coordinates = `${pickupLng},${pickupLat};${dropoffLng},${dropoffLat}`;
+  const searchParams = new URLSearchParams({
+    alternatives: "false",
+    geometries: "geojson",
+    overview: "full",
+    steps: "false",
+  });
+  const upstreamUrl = `${ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
+  const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local ride route proxy)");
+  const fastestRoute = getFastestRoute(payload);
+
+  if (!fastestRoute?.geometry?.coordinates?.length) {
+    throw new Error("No drive route available");
+  }
+
+  const waypoints = Array.isArray(payload?.waypoints) ? payload.waypoints : [];
+  const walk = await fetchWalkRoute({ lat: pickupLat, lng: pickupLng }, waypoints[0]);
+  const result = {
+    distance: fastestRoute.distance,
+    duration: fastestRoute.duration,
+    geometry: fastestRoute.geometry,
+    walk,
+    waypoints,
+  };
+  return result;
+}
+
+async function handleRideRoute(requestUrl, response) {
+  try {
+    const payload = await fetchRideRoute(requestUrl);
+    serve(response, 200, JSON.stringify(payload), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  } catch {
+    serve(response, 502, JSON.stringify({ error: "ride_route_unavailable" }), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  }
+}
+
 function resolveAssetPath(urlPathname) {
   if (urlPathname === "/" || urlPathname === "") {
     return path.join(appDir, "index.html");
@@ -199,6 +386,11 @@ async function requestHandler(request, response) {
 
   if (pathname === "/api/destination-search") {
     await handleDestinationSearch(requestUrl, response);
+    return;
+  }
+
+  if (pathname === "/api/ride-route") {
+    await handleRideRoute(requestUrl, response);
     return;
   }
 
