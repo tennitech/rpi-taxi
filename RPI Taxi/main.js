@@ -60,6 +60,15 @@ const ROUTE_WALK_METERS_PER_MINUTE = 80;
 const ROUTE_PULSE_PERIOD_MS = 3900;
 const ROUTE_PULSE_FILL_FRACTION = 0.34;
 const RIDE_BOOKED_DELAY_MS = 3000;
+const RIDE_BOOKED_ARRIVAL_DELAY_MS = 3000;
+const RIDE_BOOKED_NOTIFICATION_DURATION_MS = 3800;
+const RIDE_BOOKED_NOTIFICATION_EXIT_DURATION_MS = 240;
+const RIDE_BOOKED_SCROLL_DURATION_MS = 340;
+const RIDE_CANCEL_DELAY_MS = 3000;
+const RIDE_BOOKED_MIN_TOP_PX = 14;
+const RIDE_BOOKED_BOTTOM_GAP_PX = 18;
+const RIDE_BOOKED_TITLE_DEFAULT = "Your ride is booked";
+const RIDE_BOOKED_TITLE_ARRIVING = "Ride is ~ min away";
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
 const DEFAULT_SEARCH_ORIGIN = GEOFENCE.centroid;
 
@@ -229,6 +238,42 @@ const template = String.raw`
       <button class="ride-map-button ride-map-button--menu" type="button" data-destination-menu hidden aria-label="Menu">
         <img class="ride-map-button__icon" src="./icons/06-menu.svg" alt="" aria-hidden="true" />
       </button>
+      <section
+        class="ride-booked-notification"
+        data-booked-notification
+        role="status"
+        aria-live="polite"
+        aria-hidden="true"
+        hidden
+      >
+        <span class="ride-booked-notification__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M9.55 15.9 6.4 12.75l-1.4 1.4 4.55 4.55L19 9.25l-1.4-1.4z"></path>
+          </svg>
+        </span>
+        <span class="ride-booked-notification__copy">Ride booked and on its way</span>
+      </section>
+      <div class="ride-cancel-dialog-backdrop" data-cancel-ride-dialog aria-hidden="true" hidden>
+        <section
+          class="ride-cancel-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cancel-ride-title"
+          aria-describedby="cancel-ride-description"
+        >
+          <h2 class="ride-cancel-dialog__title" id="cancel-ride-title">Cancel this ride?</h2>
+          <p class="ride-cancel-dialog__description" id="cancel-ride-description">
+            You won't be charged if you cancel now.
+          </p>
+          <div class="ride-cancel-dialog__actions">
+            <button class="ride-cancel-dialog__confirm" type="button" data-cancel-ride-confirm>
+              <span class="ride-cancel-dialog__confirm-label">Yes, Cancel</span>
+              <span class="ride-cancel-dialog__confirm-spinner" aria-hidden="true"></span>
+            </button>
+            <button class="ride-cancel-dialog__dismiss" type="button" data-cancel-ride-dismiss>No</button>
+          </div>
+        </section>
+      </div>
 
       <section class="ride-sheet" data-sheet-state="compact" aria-label="Choose a destination">
         <div class="ride-sheet__surface" data-map-occlusion="true">
@@ -276,7 +321,7 @@ const template = String.raw`
               </header>
               <header class="ride-booking-card__booked">
                 <span class="ride-booking-card__booked-copy">
-                  <span class="ride-booking-card__booked-title">Your ride is booked</span>
+                  <span class="ride-booking-card__booked-title" data-booking-booked-title>Your ride is booked</span>
                   <span class="ride-booking-card__plate">Plate: XAI</span>
                 </span>
                 <span class="ride-booking-card__car-wrap" aria-hidden="true">
@@ -325,32 +370,40 @@ const template = String.raw`
             <section class="ride-booked-tips" aria-label="Ride tips">
               <h2 class="ride-booked-tips__title">Tips</h2>
               <div class="ride-booked-tips__scroller" aria-label="Ride tips">
-                <article class="ride-booked-tip-card">
-                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                <article class="ride-booked-tip-card ride-booked-tip-card--wait">
+                  <span class="ride-booked-tip-card__media" aria-hidden="true">
+                    <img class="ride-booked-tip-card__icon" src="./icons/11-history.svg" alt="" />
+                  </span>
                   <span class="ride-booked-tip-card__copy">
                     <span>Your ride will wait up to 7 minutes</span>
                     <small>The vehicle will leave after the timer runs out</small>
                   </span>
                 </article>
-                <article class="ride-booked-tip-card">
-                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                <article class="ride-booked-tip-card ride-booked-tip-card--seats">
+                  <span class="ride-booked-tip-card__media ride-booked-tip-card__media--seats" aria-hidden="true">
+                    <img class="ride-booked-tip-card__seats-image" src="./model-3-available-seats.svg" alt="" />
+                  </span>
                   <span class="ride-booked-tip-card__copy">
-                    <span>Meet your ride at Pickup</span>
-                    <small>Use the walking route to reach the pickup point</small>
+                    <span>Space for 4 riders</span>
+                    <small>Supervisor is seated in the driver seat</small>
                   </span>
                 </article>
-                <article class="ride-booked-tip-card">
-                  <span class="ride-booked-tip-card__media" aria-hidden="true"></span>
+                <article class="ride-booked-tip-card ride-booked-tip-card--lights">
+                  <span class="ride-booked-tip-card__media ride-booked-tip-card__media--lights" aria-hidden="true">
+                    <img class="ride-booked-tip-card__car-image" src="./assets/model-3-headlights.svg" alt="" />
+                  </span>
                   <span class="ride-booked-tip-card__copy">
-                    <span>Check the plate before entering</span>
-                    <small>Your plate number is XAI</small>
+                    <span>Vehicle lights will pulse on arrival</span>
+                    <small>Wait for the pulse before boarding</small>
                   </span>
                 </article>
               </div>
             </section>
             <div class="ride-booked-actions" aria-label="Ride actions">
               <button class="ride-booked-action" type="button">Report Issue</button>
-              <button class="ride-booked-action" type="button">Cancel Ride</button>
+              <button class="ride-booked-action ride-booked-action--cancel" type="button" data-cancel-ride-button>
+                Cancel Ride
+              </button>
             </div>
           </section>
         </div>
@@ -1306,6 +1359,7 @@ class RobotaxiMap extends HTMLElement {
     this.updateRideSheetViewport();
     this.updateResponsiveZoomBounds(!this.selectedDestinationLatLng);
     this.syncSelectedDestinationViewport(false);
+    this.updateBookedTipsOverflowMask();
   };
 
   setupRideSheet() {
@@ -1320,12 +1374,19 @@ class RobotaxiMap extends HTMLElement {
     this.destinationForm = this.querySelector("[data-destination-form]");
     this.destinationCloseButton = this.querySelector("[data-destination-close]");
     this.destinationMenuButton = this.querySelector("[data-destination-menu]");
+    this.bookedNotification = this.querySelector("[data-booked-notification]");
     this.bookingPanel = this.querySelector("[data-booking-panel]");
     this.bookingPickupSubtitle = this.querySelector("[data-booking-pickup-subtitle]");
     this.bookingDestinationTitle = this.querySelector("[data-booking-destination-title]");
     this.bookingDestinationSubtitle = this.querySelector("[data-booking-destination-subtitle]");
     this.bookingEtaText = this.querySelector("[data-booking-eta-text]");
+    this.bookingBookedTitle = this.querySelector("[data-booking-booked-title]");
     this.bookRideButton = this.querySelector("[data-book-ride-button]");
+    this.cancelRideButton = this.querySelector("[data-cancel-ride-button]");
+    this.cancelRideDialog = this.querySelector("[data-cancel-ride-dialog]");
+    this.cancelRideConfirmButton = this.querySelector("[data-cancel-ride-confirm]");
+    this.cancelRideDismissButton = this.querySelector("[data-cancel-ride-dismiss]");
+    this.bookedTipsScroller = this.querySelector(".ride-booked-tips__scroller");
 
     if (
       !this.rideSheet ||
@@ -1339,7 +1400,13 @@ class RobotaxiMap extends HTMLElement {
       !this.bookingDestinationTitle ||
       !this.bookingDestinationSubtitle ||
       !this.bookingEtaText ||
-      !this.bookRideButton
+      !this.bookingBookedTitle ||
+      !this.bookRideButton ||
+      !this.cancelRideButton ||
+      !this.cancelRideDialog ||
+      !this.cancelRideConfirmButton ||
+      !this.cancelRideDismissButton ||
+      !this.bookedTipsScroller
     ) {
       return;
     }
@@ -1352,6 +1419,13 @@ class RobotaxiMap extends HTMLElement {
     this.destinationSearchTimeout = null;
     this.destinationViewportSyncTimeout = null;
     this.rideBookedTimeout = null;
+    this.rideBookedArrivalDelayTimeout = null;
+    this.rideBookedTransitionTimeout = null;
+    this.rideBookedNotificationTimeout = null;
+    this.rideBookedNotificationResetTimeout = null;
+    this.rideBookedTitleSwapTimeout = null;
+    this.rideBookedScrollFrame = null;
+    this.cancelRideTimeout = null;
     this.selectedDestination = null;
     this.pendingDestinationKey = null;
     this.routeSelectionToken = 0;
@@ -1364,6 +1438,11 @@ class RobotaxiMap extends HTMLElement {
     this.destinationCloseButton.addEventListener("click", this.resetDestinationPicker);
     this.bookRideButton.addEventListener("pointerup", this.handleBookRideRelease);
     this.bookRideButton.addEventListener("click", this.handleBookRide);
+    this.cancelRideButton.addEventListener("click", this.handleCancelRideButton);
+    this.cancelRideDialog.addEventListener("click", this.handleCancelRideDialogClick);
+    this.cancelRideConfirmButton.addEventListener("click", this.handleCancelRideConfirm);
+    this.cancelRideDismissButton.addEventListener("click", this.handleCancelRideDismiss);
+    this.bookedTipsScroller.addEventListener("scroll", this.handleBookedTipsScroll, { passive: true });
 
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", this.handleVisualViewportChange, { passive: true });
@@ -1373,6 +1452,7 @@ class RobotaxiMap extends HTMLElement {
     this.renderDefaultDestinations();
     this.updateRideSheetViewport();
     this.updateRideSheetMetrics();
+    this.updateBookedTipsOverflowMask();
     this.hydrateCuratedDestinations();
   }
 
@@ -1381,6 +1461,13 @@ class RobotaxiMap extends HTMLElement {
     this.abortDestinationSearch();
     this.clearDestinationViewportSyncTimeout();
     this.clearRideBookedTimeout();
+    this.clearRideBookedArrivalDelayTimeout();
+    this.clearRideBookedTransitionTimeout();
+    this.clearRideBookedNotificationTimeout();
+    this.clearRideBookedNotificationResetTimeout();
+    this.clearRideBookedTitleSwapTimeout();
+    this.clearRideBookedScrollFrame();
+    this.clearCancelRideTimeout();
     this.clearRideRoute();
 
     if (this.destinationForm) {
@@ -1403,6 +1490,26 @@ class RobotaxiMap extends HTMLElement {
       this.bookRideButton.removeEventListener("click", this.handleBookRide);
     }
 
+    if (this.cancelRideButton) {
+      this.cancelRideButton.removeEventListener("click", this.handleCancelRideButton);
+    }
+
+    if (this.cancelRideDialog) {
+      this.cancelRideDialog.removeEventListener("click", this.handleCancelRideDialogClick);
+    }
+
+    if (this.cancelRideConfirmButton) {
+      this.cancelRideConfirmButton.removeEventListener("click", this.handleCancelRideConfirm);
+    }
+
+    if (this.cancelRideDismissButton) {
+      this.cancelRideDismissButton.removeEventListener("click", this.handleCancelRideDismiss);
+    }
+
+    if (this.bookedTipsScroller) {
+      this.bookedTipsScroller.removeEventListener("scroll", this.handleBookedTipsScroll);
+    }
+
     if (window.visualViewport) {
       window.visualViewport.removeEventListener("resize", this.handleVisualViewportChange);
       window.visualViewport.removeEventListener("scroll", this.handleVisualViewportChange);
@@ -1411,6 +1518,47 @@ class RobotaxiMap extends HTMLElement {
 
   handleVisualViewportChange = () => {
     this.updateRideSheetViewport();
+  };
+
+  handleBookedTipsScroll = () => {
+    this.updateBookedTipsOverflowMask();
+  };
+
+  handleCancelRideButton = () => {
+    this.openCancelRideDialog();
+  };
+
+  handleCancelRideDialogClick = (event) => {
+    if (event.target !== this.cancelRideDialog) {
+      return;
+    }
+
+    this.closeCancelRideDialog();
+  };
+
+  handleCancelRideDismiss = () => {
+    this.closeCancelRideDialog();
+  };
+
+  handleCancelRideConfirm = () => {
+    if (!this.cancelRideConfirmButton || this.isCancelRideLoading()) {
+      return;
+    }
+
+    this.cancelRideConfirmButton.classList.add("is-searching");
+    this.cancelRideConfirmButton.setAttribute("aria-busy", "true");
+
+    if (this.cancelRideDismissButton) {
+      this.cancelRideDismissButton.disabled = true;
+    }
+
+    this.cancelRideDialog?.classList.add("is-cancelling");
+    this.clearCancelRideTimeout();
+    this.cancelRideTimeout = window.setTimeout(() => {
+      this.cancelRideTimeout = null;
+      this.resetCancelRideDialogState();
+      this.resetDestinationPicker();
+    }, RIDE_CANCEL_DELAY_MS);
   };
 
   clearDestinationViewportSyncTimeout() {
@@ -1431,6 +1579,191 @@ class RobotaxiMap extends HTMLElement {
     this.rideBookedTimeout = null;
   }
 
+  clearRideBookedArrivalDelayTimeout() {
+    if (this.rideBookedArrivalDelayTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedArrivalDelayTimeout);
+    this.rideBookedArrivalDelayTimeout = null;
+  }
+
+  clearRideBookedTransitionTimeout() {
+    if (this.rideBookedTransitionTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedTransitionTimeout);
+    this.rideBookedTransitionTimeout = null;
+  }
+
+  clearRideBookedNotificationTimeout() {
+    if (this.rideBookedNotificationTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedNotificationTimeout);
+    this.rideBookedNotificationTimeout = null;
+  }
+
+  clearRideBookedNotificationResetTimeout() {
+    if (this.rideBookedNotificationResetTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedNotificationResetTimeout);
+    this.rideBookedNotificationResetTimeout = null;
+  }
+
+  clearRideBookedTitleSwapTimeout() {
+    if (this.rideBookedTitleSwapTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedTitleSwapTimeout);
+    this.rideBookedTitleSwapTimeout = null;
+  }
+
+  clearRideBookedScrollFrame() {
+    if (this.rideBookedScrollFrame === null) {
+      return;
+    }
+
+    window.cancelAnimationFrame(this.rideBookedScrollFrame);
+    this.rideBookedScrollFrame = null;
+  }
+
+  clearCancelRideTimeout() {
+    if (this.cancelRideTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.cancelRideTimeout);
+    this.cancelRideTimeout = null;
+  }
+
+  isCancelRideLoading() {
+    return Boolean(this.cancelRideConfirmButton?.classList.contains("is-searching"));
+  }
+
+  openCancelRideDialog() {
+    if (!this.cancelRideDialog || !this.isRideBookedActive() || this.isCancelRideLoading()) {
+      return;
+    }
+
+    this.cancelRideDialog.hidden = false;
+    this.cancelRideDialog.setAttribute("aria-hidden", "false");
+  }
+
+  closeCancelRideDialog() {
+    if (!this.cancelRideDialog || this.isCancelRideLoading()) {
+      return;
+    }
+
+    this.cancelRideDialog.hidden = true;
+    this.cancelRideDialog.setAttribute("aria-hidden", "true");
+  }
+
+  resetCancelRideDialogState({ hide = true } = {}) {
+    this.clearCancelRideTimeout();
+
+    if (this.cancelRideConfirmButton) {
+      this.cancelRideConfirmButton.classList.remove("is-searching");
+      this.cancelRideConfirmButton.removeAttribute("aria-busy");
+    }
+
+    if (this.cancelRideDismissButton) {
+      this.cancelRideDismissButton.disabled = false;
+    }
+
+    if (this.cancelRideDialog) {
+      this.cancelRideDialog.classList.remove("is-cancelling");
+
+      if (hide) {
+        this.cancelRideDialog.hidden = true;
+        this.cancelRideDialog.setAttribute("aria-hidden", "true");
+      }
+    }
+  }
+
+  hideRideBookedNotification(immediate = false) {
+    if (!this.bookedNotification) {
+      return;
+    }
+
+    this.clearRideBookedNotificationTimeout();
+    this.clearRideBookedNotificationResetTimeout();
+
+    if (immediate) {
+      this.bookedNotification.hidden = true;
+      this.bookedNotification.setAttribute("aria-hidden", "true");
+      this.bookedNotification.classList.remove("is-visible", "is-hiding");
+      return;
+    }
+
+    if (this.bookedNotification.hidden) {
+      return;
+    }
+
+    this.bookedNotification.classList.remove("is-visible");
+    this.bookedNotification.classList.add("is-hiding");
+    this.bookedNotification.setAttribute("aria-hidden", "true");
+    this.rideBookedNotificationResetTimeout = window.setTimeout(() => {
+      this.rideBookedNotificationResetTimeout = null;
+
+      if (!this.bookedNotification) {
+        return;
+      }
+
+      this.bookedNotification.hidden = true;
+      this.bookedNotification.classList.remove("is-hiding");
+    }, RIDE_BOOKED_NOTIFICATION_EXIT_DURATION_MS);
+  }
+
+  showRideBookedNotification() {
+    if (!this.bookedNotification) {
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+
+    this.clearRideBookedNotificationTimeout();
+    this.clearRideBookedNotificationResetTimeout();
+    this.bookedNotification.hidden = false;
+    this.bookedNotification.setAttribute("aria-hidden", "false");
+    this.bookedNotification.classList.remove("is-visible", "is-hiding");
+
+    if (prefersReducedMotion) {
+      this.bookedNotification.classList.add("is-visible");
+    } else {
+      void this.bookedNotification.offsetWidth;
+      this.bookedNotification.classList.add("is-visible");
+    }
+
+    this.rideBookedNotificationTimeout = window.setTimeout(() => {
+      this.rideBookedNotificationTimeout = null;
+      this.hideRideBookedNotification(prefersReducedMotion);
+    }, RIDE_BOOKED_NOTIFICATION_DURATION_MS);
+  }
+
+  isRideBookedActive() {
+    return Boolean(this.bookingPanel?.classList.contains("is-booked"));
+  }
+
+  updateBookedTipsOverflowMask() {
+    if (!this.bookedTipsScroller) {
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, this.bookedTipsScroller.scrollWidth - this.bookedTipsScroller.clientWidth);
+    const scrollLeft = Math.max(0, this.bookedTipsScroller.scrollLeft);
+    const hasLeftOverflow = scrollLeft > 1;
+    const hasRightOverflow = maxScrollLeft - scrollLeft > 1;
+
+    this.bookedTipsScroller.classList.toggle("has-overflow-left", hasLeftOverflow);
+    this.bookedTipsScroller.classList.toggle("has-overflow-right", hasRightOverflow);
+  }
+
   syncSelectedDestinationViewport(animate = false) {
     if (!this.selectedDestinationLatLng) {
       return;
@@ -1448,7 +1781,7 @@ class RobotaxiMap extends HTMLElement {
     this.style.setProperty("--ride-keyboard-offset", `${keyboardOffset}px`);
 
     if (this.selectedDestination) {
-      this.setRideSheetState("selected");
+      this.setRideSheetState(this.isRideBookedActive() ? "booked" : "selected");
       this.updateRideSheetMetrics();
       return;
     }
@@ -1471,6 +1804,10 @@ class RobotaxiMap extends HTMLElement {
   setRideSheetState(state) {
     if (!this.rideSheet || this.rideSheet.dataset.sheetState === state) {
       return;
+    }
+
+    if (state !== "booked") {
+      this.clearRideSheetSurfaceOffset();
     }
 
     this.rideSheet.dataset.sheetState = state;
@@ -1498,6 +1835,111 @@ class RobotaxiMap extends HTMLElement {
 
     this.rideSheet.style.setProperty("--ride-fade-start", `${fadeStart}%`);
     this.rideSheet.style.setProperty("--ride-black-start", `${Math.max(blackStart, fadeStart + 12)}%`);
+  }
+
+  clearRideSheetSurfaceOffset() {
+    if (!this.rideSheetSurface) {
+      return;
+    }
+
+    this.rideSheetSurface.style.setProperty("--ride-surface-offset-y", "0px");
+  }
+
+  getRideSheetSurfaceOffset() {
+    if (!this.rideSheetSurface) {
+      return 0;
+    }
+
+    return Number.parseFloat(this.rideSheetSurface.style.getPropertyValue("--ride-surface-offset-y")) || 0;
+  }
+
+  setRideSheetSurfaceOffset(offsetY) {
+    if (!this.rideSheetSurface || !Number.isFinite(offsetY)) {
+      return;
+    }
+
+    this.rideSheetSurface.style.setProperty("--ride-surface-offset-y", `${offsetY}px`);
+  }
+
+  alignRideSheetSurfaceTop(targetTop) {
+    if (!this.rideSheetSurface || !Number.isFinite(targetTop)) {
+      return;
+    }
+
+    this.clearRideSheetSurfaceOffset();
+    const currentTop = this.rideSheetSurface.getBoundingClientRect().top;
+    const offsetY = targetTop - currentTop;
+    this.rideSheetSurface.style.setProperty("--ride-surface-offset-y", `${offsetY}px`);
+  }
+
+  resetRideBookedArrivalState() {
+    this.clearRideBookedArrivalDelayTimeout();
+    this.clearRideBookedTransitionTimeout();
+    this.hideRideBookedNotification(true);
+    this.clearRideBookedTitleSwapTimeout();
+    this.clearRideBookedScrollFrame();
+    this.rideSheetSurface?.classList.remove("is-booked-scrolling");
+    this.bookingPanel?.classList.remove("is-arriving");
+
+    if (this.bookingBookedTitle) {
+      this.bookingBookedTitle.textContent = RIDE_BOOKED_TITLE_DEFAULT;
+    }
+  }
+
+  getRideBookedAutoScrollTop(currentTop) {
+    if (!this.rideSheetSurface || !Number.isFinite(currentTop)) {
+      return currentTop;
+    }
+
+    const surfaceHeight = this.rideSheetSurface.getBoundingClientRect().height;
+    const viewportHeight = window.innerHeight || 0;
+    const fittedTop = Math.max(RIDE_BOOKED_MIN_TOP_PX, viewportHeight - RIDE_BOOKED_BOTTOM_GAP_PX - surfaceHeight);
+    return Math.min(currentTop, fittedTop);
+  }
+
+  finishRideBookedAutoScroll() {
+    this.clearRideBookedTransitionTimeout();
+    this.rideSheetSurface?.classList.remove("is-booked-scrolling");
+    this.bookingPanel?.classList.add("is-arriving");
+
+    if (!this.bookingBookedTitle || this.bookingBookedTitle.textContent === RIDE_BOOKED_TITLE_ARRIVING) {
+      return;
+    }
+
+    this.clearRideBookedTitleSwapTimeout();
+    this.bookingBookedTitle.textContent = RIDE_BOOKED_TITLE_ARRIVING;
+  }
+
+  startRideBookedAutoScroll() {
+    if (!this.rideSheetSurface) {
+      this.finishRideBookedAutoScroll();
+      return;
+    }
+
+    const currentTop = this.rideSheetSurface.getBoundingClientRect().top;
+    const targetTop = this.getRideBookedAutoScrollTop(currentTop);
+
+    if (!Number.isFinite(targetTop) || Math.abs(targetTop - currentTop) < 2) {
+      this.finishRideBookedAutoScroll();
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    const nextOffset = this.getRideSheetSurfaceOffset() + (targetTop - currentTop);
+
+    if (prefersReducedMotion) {
+      this.setRideSheetSurfaceOffset(nextOffset);
+      this.finishRideBookedAutoScroll();
+      return;
+    }
+
+    this.rideSheetSurface.classList.add("is-booked-scrolling");
+    this.setRideSheetSurfaceOffset(nextOffset);
+    this.clearRideBookedTransitionTimeout();
+    this.rideBookedTransitionTimeout = window.setTimeout(() => {
+      this.rideBookedTransitionTimeout = null;
+      this.finishRideBookedAutoScroll();
+    }, RIDE_BOOKED_SCROLL_DURATION_MS + 40);
   }
 
   handleDestinationFocus = () => {
@@ -1631,6 +2073,9 @@ class RobotaxiMap extends HTMLElement {
 
   resetBookRideSearchState() {
     this.clearRideBookedTimeout();
+    this.resetRideBookedArrivalState();
+    this.clearRideSheetSurfaceOffset();
+    this.resetCancelRideDialogState();
 
     if (this.bookRideButton) {
       this.bookRideButton.classList.remove("is-searching", "is-booked");
@@ -1655,6 +2100,9 @@ class RobotaxiMap extends HTMLElement {
       return;
     }
 
+    this.resetRideBookedArrivalState();
+    const selectedTop = this.rideSheetSurface?.getBoundingClientRect().top ?? null;
+
     this.bookRideButton.classList.remove("is-searching");
     this.bookRideButton.classList.add("is-booked");
     this.bookRideButton.removeAttribute("aria-busy");
@@ -1664,6 +2112,37 @@ class RobotaxiMap extends HTMLElement {
     if (this.rideSheet) {
       this.rideSheet.dataset.sheetState = "booked";
     }
+
+    if (this.bookedTipsScroller) {
+      this.bookedTipsScroller.scrollLeft = 0;
+    }
+
+    this.showRideBookedNotification();
+
+    if (Number.isFinite(selectedTop)) {
+      window.requestAnimationFrame(() => {
+        this.alignRideSheetSurfaceTop(selectedTop);
+        this.updateRideSheetMetrics();
+        this.updateBookedTipsOverflowMask();
+        this.clearRideBookedArrivalDelayTimeout();
+        this.rideBookedArrivalDelayTimeout = window.setTimeout(() => {
+          this.rideBookedArrivalDelayTimeout = null;
+          this.clearRideBookedScrollFrame();
+          this.rideBookedScrollFrame = window.requestAnimationFrame(() => {
+            this.rideBookedScrollFrame = null;
+            this.startRideBookedAutoScroll();
+          });
+        }, RIDE_BOOKED_ARRIVAL_DELAY_MS);
+      });
+      return;
+    }
+
+    this.clearRideBookedArrivalDelayTimeout();
+    this.rideBookedArrivalDelayTimeout = window.setTimeout(() => {
+      this.rideBookedArrivalDelayTimeout = null;
+      this.updateBookedTipsOverflowMask();
+      this.finishRideBookedAutoScroll();
+    }, RIDE_BOOKED_ARRIVAL_DELAY_MS);
   }
 
   clearDestinationMarker() {
