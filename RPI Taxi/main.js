@@ -66,7 +66,7 @@ const RIDE_BOOKED_NOTIFICATION_EXIT_DURATION_MS = 240;
 const RIDE_BOOKED_SCROLL_DURATION_MS = 340;
 const RIDE_CANCEL_DELAY_MS = 3000;
 const RIDE_BOOKED_MIN_TOP_PX = 14;
-const RIDE_BOOKED_BOTTOM_GAP_PX = 18;
+const RIDE_BOOKED_BOTTOM_GAP_PX = 42;
 const RIDE_BOOKED_TITLE_DEFAULT = "Your ride is booked";
 const RIDE_BOOKED_TITLE_ARRIVING = "Ride is ~ min away";
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
@@ -395,6 +395,23 @@ const template = String.raw`
                   <span class="ride-booked-tip-card__copy">
                     <span>Vehicle lights will pulse on arrival</span>
                     <small>Wait for the pulse before boarding</small>
+                  </span>
+                </article>
+                <article class="ride-booked-tip-card ride-booked-tip-card--trunk">
+                  <span class="ride-booked-tip-card__media ride-booked-tip-card__media--trunk" aria-hidden="true">
+                    <img class="ride-booked-tip-card__trunk-image" src="./model-3-trunk.svg" alt="" />
+                  </span>
+                  <span class="ride-booked-tip-card__copy">
+                    <span>Store your items in the trunk</span>
+                    <small>The trunk unlocks automatically on arrival</small>
+                  </span>
+                </article>
+                <article class="ride-booked-tip-card ride-booked-tip-card--camera">
+                  <span class="ride-booked-tip-card__media ride-booked-tip-card__media--camera" aria-hidden="true">
+                    <img class="ride-booked-tip-card__camera-image" src="./interior-camera-white.png" alt="" />
+                  </span>
+                  <span class="ride-booked-tip-card__copy">
+                    <span>The interior camera will be used for your safety</span>
                   </span>
                 </article>
               </div>
