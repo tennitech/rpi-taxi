@@ -10,7 +10,7 @@ const GEOFENCE_OUTER_RING = [
 const GEOFENCE_THEME_STYLES = {
   dark: {
     border: {
-      color: "#b8bcc2",
+      color: "#aeb7c4",
       fill: false,
       opacity: 0.72,
       smoothFactor: 1.1,
@@ -18,8 +18,8 @@ const GEOFENCE_THEME_STYLES = {
     },
     mask: {
       color: "transparent",
-      fillColor: "#050608",
-      fillOpacity: 0.46,
+      fillColor: "#03060b",
+      fillOpacity: 0.5,
       interactive: false,
       smoothFactor: 1.1,
       stroke: false,
@@ -61,6 +61,7 @@ const ROUTE_PULSE_PERIOD_MS = 3900;
 const ROUTE_PULSE_FILL_FRACTION = 0.34;
 const RIDE_BOOKED_DELAY_MS = 3000;
 const RIDE_BOOKED_ARRIVAL_DELAY_MS = 3000;
+const RIDE_BOOKED_VEHICLE_REVEAL_DELAY_MS = 5000;
 const RIDE_BOOKED_NOTIFICATION_DURATION_MS = 3800;
 const RIDE_BOOKED_NOTIFICATION_EXIT_DURATION_MS = 240;
 const RIDE_BOOKED_SCROLL_DURATION_MS = 340;
@@ -69,6 +70,18 @@ const RIDE_BOOKED_MIN_TOP_PX = 14;
 const RIDE_BOOKED_BOTTOM_GAP_PX = 42;
 const RIDE_BOOKED_TITLE_DEFAULT = "Your ride is booked";
 const RIDE_BOOKED_TITLE_ARRIVING = "Ride is ~ min away";
+const RIDE_BOOKED_TITLE_HERE = "Ride is here";
+const MOCK_VEHICLE_POLL_MIN_MS = 900;
+const MOCK_VEHICLE_POLL_MAX_MS = 1800;
+const MOCK_VEHICLE_SIMULATION_MIN_MS = 9000;
+const MOCK_VEHICLE_SIMULATION_MAX_MS = 16000;
+const MOCK_VEHICLE_MIN_DURATION_SECONDS = 70;
+const MOCK_VEHICLE_MAX_DURATION_SECONDS = 330;
+const MOCK_VEHICLE_TARGET_DURATION_SECONDS = 170;
+const MOCK_VEHICLE_LOOKAHEAD_METERS = 18;
+const MOCK_VEHICLE_APPROACH_COLOR = "#3A6BE6";
+const MOCK_VEHICLE_APPROACH_BORDER_COLOR = "#064086";
+const MOCK_VEHICLE_ASSET_BEARING_OFFSET_DEGREES = -90;
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
 const DEFAULT_SEARCH_ORIGIN = GEOFENCE.centroid;
 
@@ -339,7 +352,7 @@ const template = String.raw`
                     <span class="ride-booking-stop__title">Pickup</span>
                     <span class="ride-booking-stop__subtitle" data-booking-pickup-subtitle>Tap to edit</span>
                   </span>
-                  <span class="ride-booking-stop__time">~ min</span>
+                  <span class="ride-booking-stop__time" data-booking-pickup-time>~ min</span>
                 </div>
                 <span class="ride-booking-route__arrow" aria-hidden="true"></span>
                 <div class="ride-booking-stop ride-booking-stop--destination">
@@ -348,7 +361,7 @@ const template = String.raw`
                     <span class="ride-booking-stop__title" data-booking-destination-title>Destination</span>
                     <span class="ride-booking-stop__subtitle" data-booking-destination-subtitle>Ride zone</span>
                   </span>
-                  <span class="ride-booking-stop__time">~ min</span>
+                  <span class="ride-booking-stop__time" data-booking-destination-time>~ min</span>
                 </div>
               </div>
             </article>
@@ -615,6 +628,89 @@ function formatWalkDuration(durationSeconds) {
   }
 
   return `${Math.max(1, Math.round(durationSeconds / 60))} min walk`;
+}
+
+function formatMinutes(durationSeconds, { minimumMinutes = 1, suffix = " min" } = {}) {
+  if (!Number.isFinite(durationSeconds)) {
+    return "";
+  }
+
+  return `${Math.max(minimumMinutes, Math.round(durationSeconds / 60))}${suffix}`;
+}
+
+function formatWalkMinutes(durationSeconds, distanceMeters) {
+  if (Number.isFinite(durationSeconds)) {
+    return formatMinutes(durationSeconds);
+  }
+
+  if (!Number.isFinite(distanceMeters)) {
+    return "";
+  }
+
+  return formatMinutes((distanceMeters / ROUTE_WALK_METERS_PER_MINUTE) * 60);
+}
+
+function formatRideArrivalTitle(durationSeconds) {
+  const minutesText = formatMinutes(durationSeconds);
+  return minutesText ? `Ride is ${minutesText} away` : RIDE_BOOKED_TITLE_ARRIVING;
+}
+
+function normalizeBearingDegrees(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return ((value % 360) + 360) % 360;
+}
+
+function getBearingBetweenLatLngs(startLatLng, endLatLng) {
+  if (!startLatLng || !endLatLng) {
+    return 0;
+  }
+
+  const startLat = (startLatLng.lat * Math.PI) / 180;
+  const endLat = (endLatLng.lat * Math.PI) / 180;
+  const deltaLng = ((endLatLng.lng - startLatLng.lng) * Math.PI) / 180;
+  const y = Math.sin(deltaLng) * Math.cos(endLat);
+  const x =
+    Math.cos(startLat) * Math.sin(endLat) -
+    Math.sin(startLat) * Math.cos(endLat) * Math.cos(deltaLng);
+
+  return normalizeBearingDegrees((Math.atan2(y, x) * 180) / Math.PI);
+}
+
+function offsetLatLng(latLng, distanceMeters, bearingDegrees) {
+  if (!latLng) {
+    return null;
+  }
+
+  const angularDistance = distanceMeters / 6371000;
+  const bearingRadians = (bearingDegrees * Math.PI) / 180;
+  const startLat = (latLng.lat * Math.PI) / 180;
+  const startLng = (latLng.lng * Math.PI) / 180;
+  const nextLat = Math.asin(
+    Math.sin(startLat) * Math.cos(angularDistance) +
+      Math.cos(startLat) * Math.sin(angularDistance) * Math.cos(bearingRadians),
+  );
+  const nextLng =
+    startLng +
+    Math.atan2(
+      Math.sin(bearingRadians) * Math.sin(angularDistance) * Math.cos(startLat),
+      Math.cos(angularDistance) - Math.sin(startLat) * Math.sin(nextLat),
+    );
+
+  return {
+    lat: (nextLat * 180) / Math.PI,
+    lng: (nextLng * 180) / Math.PI,
+  };
+}
+
+function getRandomNumber(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function hasMeaningfulWalkToPickup(rideRoute) {
+  return Number.isFinite(rideRoute?.walkDistanceMeters) && rideRoute.walkDistanceMeters >= ROUTE_WALK_THRESHOLD_METERS;
 }
 
 function formatDistance(distanceMiles) {
@@ -942,6 +1038,10 @@ class RobotaxiMap extends HTMLElement {
     rideRoutePane.classList.add("leaflet-ride-route-pane");
     rideRoutePane.style.zIndex = "665";
 
+    const rideApproachPane = this.map.createPane("rideApproachPane");
+    rideApproachPane.classList.add("leaflet-ride-approach-pane");
+    rideApproachPane.style.zIndex = "672";
+
     const destinationPane = this.map.createPane("destinationPane");
     destinationPane.classList.add("leaflet-destination-pane");
     destinationPane.style.zIndex = "680";
@@ -957,6 +1057,10 @@ class RobotaxiMap extends HTMLElement {
     const rideRouteHudPane = this.map.createPane("rideRouteHudPane");
     rideRouteHudPane.classList.add("leaflet-ride-route-hud-pane");
     rideRouteHudPane.style.zIndex = "700";
+
+    const rideVehiclePane = this.map.createPane("rideVehiclePane");
+    rideVehiclePane.classList.add("leaflet-ride-vehicle-pane");
+    rideVehiclePane.style.zIndex = "699";
 
     this.tileLayers = Object.fromEntries(
       Object.entries(TILE_LAYERS).map(([theme, definitions]) => {
@@ -1375,7 +1479,7 @@ class RobotaxiMap extends HTMLElement {
   handleResize = () => {
     this.updateRideSheetViewport();
     this.updateResponsiveZoomBounds(!this.selectedDestinationLatLng);
-    this.syncSelectedDestinationViewport(false);
+    this.syncRideViewport(false);
     this.updateBookedTipsOverflowMask();
   };
 
@@ -1394,8 +1498,10 @@ class RobotaxiMap extends HTMLElement {
     this.bookedNotification = this.querySelector("[data-booked-notification]");
     this.bookingPanel = this.querySelector("[data-booking-panel]");
     this.bookingPickupSubtitle = this.querySelector("[data-booking-pickup-subtitle]");
+    this.bookingPickupTime = this.querySelector("[data-booking-pickup-time]");
     this.bookingDestinationTitle = this.querySelector("[data-booking-destination-title]");
     this.bookingDestinationSubtitle = this.querySelector("[data-booking-destination-subtitle]");
+    this.bookingDestinationTime = this.querySelector("[data-booking-destination-time]");
     this.bookingEtaText = this.querySelector("[data-booking-eta-text]");
     this.bookingBookedTitle = this.querySelector("[data-booking-booked-title]");
     this.bookRideButton = this.querySelector("[data-book-ride-button]");
@@ -1414,8 +1520,10 @@ class RobotaxiMap extends HTMLElement {
       !this.destinationCloseButton ||
       !this.bookingPanel ||
       !this.bookingPickupSubtitle ||
+      !this.bookingPickupTime ||
       !this.bookingDestinationTitle ||
       !this.bookingDestinationSubtitle ||
+      !this.bookingDestinationTime ||
       !this.bookingEtaText ||
       !this.bookingBookedTitle ||
       !this.bookRideButton ||
@@ -1442,10 +1550,17 @@ class RobotaxiMap extends HTMLElement {
     this.rideBookedNotificationResetTimeout = null;
     this.rideBookedTitleSwapTimeout = null;
     this.rideBookedScrollFrame = null;
+    this.rideVehicleRevealTimeout = null;
+    this.mockVehiclePollTimeout = null;
     this.cancelRideTimeout = null;
     this.selectedDestination = null;
     this.pendingDestinationKey = null;
     this.routeSelectionToken = 0;
+    this.activeRideRoute = null;
+    this.activeMockVehicleJourney = null;
+    this.mockVehicleJourneyPromise = null;
+    this.mockVehiclePlanToken = 0;
+    this.mockVehicleCurrentLatLng = null;
 
     this.destinationForm.addEventListener("submit", this.handleDestinationSubmit);
     this.destinationInput.addEventListener("focus", this.handleDestinationFocus);
@@ -1484,6 +1599,8 @@ class RobotaxiMap extends HTMLElement {
     this.clearRideBookedNotificationResetTimeout();
     this.clearRideBookedTitleSwapTimeout();
     this.clearRideBookedScrollFrame();
+    this.clearRideVehicleRevealTimeout();
+    this.clearMockVehiclePollTimeout();
     this.clearCancelRideTimeout();
     this.clearRideRoute();
 
@@ -1650,6 +1767,24 @@ class RobotaxiMap extends HTMLElement {
     this.rideBookedScrollFrame = null;
   }
 
+  clearRideVehicleRevealTimeout() {
+    if (this.rideVehicleRevealTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideVehicleRevealTimeout);
+    this.rideVehicleRevealTimeout = null;
+  }
+
+  clearMockVehiclePollTimeout() {
+    if (this.mockVehiclePollTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.mockVehiclePollTimeout);
+    this.mockVehiclePollTimeout = null;
+  }
+
   clearCancelRideTimeout() {
     if (this.cancelRideTimeout === null) {
       return;
@@ -1793,6 +1928,21 @@ class RobotaxiMap extends HTMLElement {
     });
   }
 
+  syncRideViewport(animate = false) {
+    if (this.activeMockVehicleJourney?.pickupLatLng && this.mockVehicleCurrentLatLng) {
+      this.fitLatLngsInAvailableMap([this.mockVehicleCurrentLatLng, this.activeMockVehicleJourney.pickupLatLng], {
+        animate,
+        duration: animate ? 0.55 : 0,
+        extraPaddingBottom: 56,
+        extraPaddingTop: 24,
+        maxZoom: 16.8,
+      });
+      return;
+    }
+
+    this.syncSelectedDestinationViewport(animate);
+  }
+
   updateRideSheetViewport() {
     const keyboardOffset = this.getKeyboardOffset();
     this.style.setProperty("--ride-keyboard-offset", `${keyboardOffset}px`);
@@ -1829,7 +1979,7 @@ class RobotaxiMap extends HTMLElement {
 
     this.rideSheet.dataset.sheetState = state;
     this.updateResponsiveZoomBounds(!this.selectedDestinationLatLng);
-    this.syncSelectedDestinationViewport(false);
+    this.syncRideViewport(false);
     window.requestAnimationFrame(() => {
       this.updateRideSheetMetrics();
     });
@@ -1895,6 +2045,7 @@ class RobotaxiMap extends HTMLElement {
     this.hideRideBookedNotification(true);
     this.clearRideBookedTitleSwapTimeout();
     this.clearRideBookedScrollFrame();
+    this.stopMockVehicleTracking({ clearJourney: false, invalidate: false });
     this.rideSheetSurface?.classList.remove("is-booked-scrolling");
     this.bookingPanel?.classList.remove("is-arriving");
 
@@ -1925,6 +2076,7 @@ class RobotaxiMap extends HTMLElement {
 
     this.clearRideBookedTitleSwapTimeout();
     this.bookingBookedTitle.textContent = RIDE_BOOKED_TITLE_ARRIVING;
+    this.scheduleRideVehicleReveal();
   }
 
   startRideBookedAutoScroll() {
@@ -2007,15 +2159,37 @@ class RobotaxiMap extends HTMLElement {
     }
   };
 
+  updateBookingStopTimes({ pickupTimeText = "~ min", destinationTimeText = "~ min" } = {}) {
+    if (this.bookingPickupTime) {
+      this.bookingPickupTime.textContent = pickupTimeText;
+    }
+
+    if (this.bookingDestinationTime) {
+      this.bookingDestinationTime.textContent = destinationTimeText;
+    }
+  }
+
   renderSelectedDestination(destination, rideRoute = null) {
-    if (!this.bookingPanel || !this.bookingPickupSubtitle || !this.bookingDestinationTitle || !this.bookingDestinationSubtitle) {
+    if (
+      !this.bookingPanel ||
+      !this.bookingPickupSubtitle ||
+      !this.bookingDestinationTitle ||
+      !this.bookingDestinationSubtitle
+    ) {
       return;
     }
 
     this.resetBookRideSearchState();
-    this.bookingPickupSubtitle.textContent = rideRoute?.walkTimeText || "Tap to edit";
+    const pickupHasWalk = hasMeaningfulWalkToPickup(rideRoute);
+    this.bookingPickupSubtitle.textContent = pickupHasWalk ? rideRoute?.walkTimeText || "1 min walk" : "At your location";
     this.bookingDestinationTitle.textContent = destination.title || "Destination";
     this.bookingDestinationSubtitle.textContent = destination.subtitle || "Ride zone";
+    this.updateBookingStopTimes({
+      pickupTimeText: pickupHasWalk
+        ? formatWalkMinutes(rideRoute?.walkDurationSeconds, rideRoute?.walkDistanceMeters) || "~ min"
+        : "Now",
+      destinationTimeText: formatMinutes(rideRoute?.durationSeconds) || "~ min",
+    });
     this.bookingPanel.hidden = false;
 
     if (this.destinationCloseButton) {
@@ -2107,6 +2281,8 @@ class RobotaxiMap extends HTMLElement {
       this.rideSheet.dataset.sheetState = "selected";
     }
 
+    this.updateBookingStopTimes();
+
     if (this.bookingEtaText) {
       this.bookingEtaText.innerHTML = "A ride can arrive in <strong>~ min</strong>";
     }
@@ -2118,6 +2294,7 @@ class RobotaxiMap extends HTMLElement {
     }
 
     this.resetRideBookedArrivalState();
+    this.prepareMockVehicleApproach();
     const selectedTop = this.rideSheetSurface?.getBoundingClientRect().top ?? null;
 
     this.bookRideButton.classList.remove("is-searching");
@@ -2173,16 +2350,20 @@ class RobotaxiMap extends HTMLElement {
 
   clearRideRoute() {
     this.stopRoutePulse();
+    this.stopMockVehicleTracking({ clearJourney: true, invalidate: true });
 
     [
       "rideRouteBaseLine",
       "rideRoutePulseLine",
+      "rideApproachOutlineLine",
+      "rideApproachLine",
       "rideRouteWalkLine",
       "rideRoutePickupMarker",
       "rideRouteDropoffMarker",
       "rideRouteWalkMarker",
       "rideRoutePickupChipMarker",
       "rideRouteDropoffChipMarker",
+      "rideVehicleMarker",
       "destinationMarker",
     ].forEach((propertyName) => {
       const layer = this[propertyName];
@@ -2193,6 +2374,7 @@ class RobotaxiMap extends HTMLElement {
 
       this[propertyName] = null;
     });
+    this.activeRideRoute = null;
     this.activeRouteLatLngs = [];
     this.activeRouteMeasures = null;
   }
@@ -2857,6 +3039,7 @@ class RobotaxiMap extends HTMLElement {
     }
 
     this.clearRideRoute();
+    this.activeRideRoute = rideRoute;
     const routeLatLngs =
       Array.isArray(rideRoute.routeLatLngs) && rideRoute.routeLatLngs.length >= 2
         ? rideRoute.routeLatLngs
@@ -2933,12 +3116,13 @@ class RobotaxiMap extends HTMLElement {
 
     this.rideRouteWalkLine = window.L.polyline(walkLatLngs, {
       color: "#ffffff",
-      dashArray: "2 8",
+      dashArray: "1 11",
       interactive: false,
       lineCap: "round",
-      opacity: 0.38,
+      lineJoin: "round",
+      opacity: 0.76,
       pane: "rideRoutePane",
-      weight: 3,
+      weight: 4,
     }).addTo(this.map);
   }
 
@@ -2973,11 +3157,10 @@ class RobotaxiMap extends HTMLElement {
     }
 
     const hasWalk =
-      rideRoute.originLatLng &&
-      Number.isFinite(rideRoute.walkDistanceMeters) &&
-      rideRoute.walkDistanceMeters >= ROUTE_WALK_THRESHOLD_METERS;
+      rideRoute.originLatLng && hasMeaningfulWalkToPickup(rideRoute);
     const pickupChipLatLng = rideRoute.pickupLatLng;
-    const pickupMainText = rideRoute.walkTimeText || "1 min walk";
+    const pickupMainText = hasWalk ? rideRoute.walkTimeText || "1 min walk" : "Pickup";
+    const pickupSubtext = hasWalk ? "to Pickup" : "At your location";
 
     this.rideRoutePickupChipMarker = window.L.marker(pickupChipLatLng, {
       icon: window.L.divIcon({
@@ -2989,7 +3172,7 @@ class RobotaxiMap extends HTMLElement {
             </span>
             <span class="ride-route-location-chip__text">
               <span class="ride-route-location-chip__label">${pickupMainText}</span>
-              <span class="ride-route-location-chip__subtext">to Pickup</span>
+              <span class="ride-route-location-chip__subtext">${pickupSubtext}</span>
             </span>
             <span class="ride-route-location-chip__chevron" aria-hidden="true">
               <span class="ride-route-location-chip__chevron-icon"></span>
@@ -3012,6 +3195,362 @@ class RobotaxiMap extends HTMLElement {
       rideRoute.pickupLatLng,
       rideRoute.dropoffLatLng,
     ].filter(Boolean);
+  }
+
+  scheduleRideVehicleReveal() {
+    this.clearRideVehicleRevealTimeout();
+    this.rideVehicleRevealTimeout = window.setTimeout(() => {
+      this.rideVehicleRevealTimeout = null;
+      this.activateMockVehicleTracking();
+    }, RIDE_BOOKED_VEHICLE_REVEAL_DELAY_MS);
+  }
+
+  async prepareMockVehicleApproach() {
+    const pickupLatLng = this.activeRideRoute?.pickupLatLng;
+
+    if (!pickupLatLng) {
+      return null;
+    }
+
+    const planToken = (this.mockVehiclePlanToken ?? 0) + 1;
+    this.mockVehiclePlanToken = planToken;
+    this.activeMockVehicleJourney = null;
+    const dropoffLatLng = this.activeRideRoute?.dropoffLatLng ?? this.selectedDestinationLatLng ?? null;
+    this.mockVehicleJourneyPromise = this.buildMockVehicleJourney(pickupLatLng, dropoffLatLng)
+      .then((journey) => {
+        if (this.mockVehiclePlanToken !== planToken) {
+          return null;
+        }
+
+        this.activeMockVehicleJourney = journey;
+        return journey;
+      })
+      .catch((error) => {
+        if (this.mockVehiclePlanToken === planToken) {
+          this.activeMockVehicleJourney = null;
+          this.mockVehicleJourneyPromise = null;
+          console.error("Mock vehicle route failed.", error);
+        }
+
+        return null;
+      });
+    return this.mockVehicleJourneyPromise;
+  }
+
+  async buildMockVehicleJourney(pickupLatLng, dropoffLatLng) {
+    const candidates = this.generateMockVehicleSpawnCandidates(pickupLatLng, dropoffLatLng);
+    const attemptedJourneys = [];
+
+    for (const candidate of candidates) {
+      try {
+        const candidateLatLng = window.L.latLng(candidate.lat, candidate.lng);
+        const candidateRoute = await this.fetchRideRoute(candidateLatLng, pickupLatLng);
+        const routeLatLngs =
+          Array.isArray(candidateRoute.routeLatLngs) && candidateRoute.routeLatLngs.length >= 2
+            ? candidateRoute.routeLatLngs
+            : [candidateLatLng, pickupLatLng];
+        const measures = this.getRouteMeasures(routeLatLngs);
+
+        if (measures.totalMeters <= 8) {
+          continue;
+        }
+
+        const durationSeconds = Number.isFinite(candidateRoute.durationSeconds)
+          ? candidateRoute.durationSeconds
+          : measures.totalMeters / 5.8;
+        const journey = {
+          durationSeconds,
+          measures,
+          pickupLatLng: candidateRoute.dropoffLatLng ?? pickupLatLng,
+          routeLatLngs,
+          simulationDurationMs: clampNumber(
+            durationSeconds * getRandomNumber(34, 46),
+            MOCK_VEHICLE_SIMULATION_MIN_MS,
+            MOCK_VEHICLE_SIMULATION_MAX_MS,
+          ),
+        };
+        attemptedJourneys.push(journey);
+
+        if (
+          durationSeconds >= MOCK_VEHICLE_MIN_DURATION_SECONDS &&
+          durationSeconds <= MOCK_VEHICLE_MAX_DURATION_SECONDS
+        ) {
+          return journey;
+        }
+      } catch {
+        // Try the next randomized spawn.
+      }
+    }
+
+    if (attemptedJourneys.length > 0) {
+      return attemptedJourneys.sort((left, right) => {
+        return (
+          Math.abs(left.durationSeconds - MOCK_VEHICLE_TARGET_DURATION_SECONDS) -
+          Math.abs(right.durationSeconds - MOCK_VEHICLE_TARGET_DURATION_SECONDS)
+        );
+      })[0];
+    }
+
+    const fallbackBearing = getRandomNumber(0, 360);
+    const fallbackOrigin = offsetLatLng(pickupLatLng, 360, fallbackBearing);
+    const fallbackLatLng = window.L.latLng(fallbackOrigin.lat, fallbackOrigin.lng);
+    const fallbackRouteLatLngs = [fallbackLatLng, pickupLatLng];
+    const fallbackMeasures = this.getRouteMeasures(fallbackRouteLatLngs);
+    return {
+      durationSeconds: Math.max(60, fallbackMeasures.totalMeters / 5.2),
+      measures: fallbackMeasures,
+      pickupLatLng,
+      routeLatLngs: fallbackRouteLatLngs,
+      simulationDurationMs: 10_500,
+    };
+  }
+
+  generateMockVehicleSpawnCandidates(pickupLatLng, dropoffLatLng) {
+    const candidates = [];
+    const seedBearing = dropoffLatLng ? getBearingBetweenLatLngs(pickupLatLng, dropoffLatLng) : getRandomNumber(0, 360);
+    const approachOffsets = [180, 145, 215, 120, 240, 95, 265];
+
+    for (let index = 0; index < 12; index += 1) {
+      const bearing = normalizeBearingDegrees(
+        seedBearing +
+          (approachOffsets[index % approachOffsets.length] ?? 180) +
+          getRandomNumber(-22, 22) +
+          (index >= approachOffsets.length ? getRandomNumber(-130, 130) : 0),
+      );
+      const distanceMeters = getRandomNumber(index < 4 ? 260 : 340, index < 7 ? 780 : 1200);
+      const candidate = offsetLatLng(pickupLatLng, distanceMeters, bearing);
+
+      if (!candidate || !this.isWithinGeofence(candidate.lat, candidate.lng)) {
+        continue;
+      }
+
+      candidates.push(candidate);
+    }
+
+    if (candidates.length > 0) {
+      return candidates;
+    }
+
+    const fallbackCandidate = offsetLatLng(pickupLatLng, 420, normalizeBearingDegrees(seedBearing + 180));
+    return fallbackCandidate ? [fallbackCandidate] : [];
+  }
+
+  async activateMockVehicleTracking() {
+    if (!this.isRideBookedActive() || !this.activeRideRoute?.pickupLatLng) {
+      return;
+    }
+
+    let currentPlanToken = this.mockVehiclePlanToken;
+    let resolvedJourney = this.activeMockVehicleJourney;
+
+    if (!resolvedJourney && this.mockVehicleJourneyPromise) {
+      resolvedJourney = await this.mockVehicleJourneyPromise;
+    }
+
+    if (!resolvedJourney) {
+      const pendingJourney = this.prepareMockVehicleApproach();
+      currentPlanToken = this.mockVehiclePlanToken;
+      resolvedJourney = pendingJourney ? await pendingJourney : null;
+    }
+
+    if (
+      !resolvedJourney ||
+      this.mockVehiclePlanToken !== currentPlanToken ||
+      !this.isRideBookedActive() ||
+      !this.activeRideRoute?.pickupLatLng
+    ) {
+      return;
+    }
+
+    this.stopMockVehicleTracking({ clearJourney: false, invalidate: false });
+    this.stopRoutePulse();
+
+    if (this.rideRoutePulseLine) {
+      this.rideRoutePulseLine.setLatLngs([]);
+      this.rideRoutePulseLine.setStyle({ opacity: 0 });
+    }
+
+    this.activeMockVehicleJourney = resolvedJourney;
+    this.mockVehicleSimulationStartedAt = Date.now();
+    this.updateMockVehicleTracking(0, { fitViewport: true });
+    this.scheduleNextMockVehiclePoll();
+  }
+
+  stopMockVehicleTracking({ clearJourney = true, invalidate = true } = {}) {
+    this.clearRideVehicleRevealTimeout();
+    this.clearMockVehiclePollTimeout();
+    this.mockVehicleSimulationStartedAt = null;
+    this.mockVehicleCurrentLatLng = null;
+
+    ["rideApproachOutlineLine", "rideApproachLine", "rideVehicleMarker"].forEach((propertyName) => {
+      const layer = this[propertyName];
+
+      if (this.map && layer) {
+        this.map.removeLayer(layer);
+      }
+
+      this[propertyName] = null;
+    });
+
+    if (invalidate) {
+      this.mockVehiclePlanToken = (this.mockVehiclePlanToken ?? 0) + 1;
+      this.mockVehicleJourneyPromise = null;
+    }
+
+    if (clearJourney) {
+      this.activeMockVehicleJourney = null;
+    }
+  }
+
+  scheduleNextMockVehiclePoll() {
+    if (!this.activeMockVehicleJourney || !this.mockVehicleSimulationStartedAt) {
+      return;
+    }
+
+    this.clearMockVehiclePollTimeout();
+    this.mockVehiclePollTimeout = window.setTimeout(() => {
+      this.mockVehiclePollTimeout = null;
+      const elapsedMs = Date.now() - this.mockVehicleSimulationStartedAt;
+      const progress = clampNumber(elapsedMs / this.activeMockVehicleJourney.simulationDurationMs, 0, 1);
+      this.updateMockVehicleTracking(progress);
+
+      if (progress >= 1) {
+        return;
+      }
+
+      this.scheduleNextMockVehiclePoll();
+    }, Math.round(getRandomNumber(MOCK_VEHICLE_POLL_MIN_MS, MOCK_VEHICLE_POLL_MAX_MS)));
+  }
+
+  updateMockVehicleTracking(progress, { fitViewport = false } = {}) {
+    if (!this.map || !this.activeMockVehicleJourney) {
+      return;
+    }
+
+    const safeProgress = clampNumber(progress, 0, 1);
+    const { measures, pickupLatLng, routeLatLngs } = this.activeMockVehicleJourney;
+    const travelledMeters = measures.totalMeters * safeProgress;
+    const currentLatLng = this.getRoutePointAtDistance(routeLatLngs, measures, travelledMeters);
+    const remainingLatLngs =
+      safeProgress >= 1
+        ? []
+        : this.getRouteSegment(routeLatLngs, measures, travelledMeters, measures.totalMeters);
+    const nextBearingTarget =
+      safeProgress >= 1
+        ? pickupLatLng
+        : this.getRoutePointAtDistance(
+            routeLatLngs,
+            measures,
+            Math.min(measures.totalMeters, travelledMeters + MOCK_VEHICLE_LOOKAHEAD_METERS),
+          );
+    const bearingDegrees = getBearingBetweenLatLngs(currentLatLng, nextBearingTarget);
+    const remainingDurationSeconds = Math.max(0, this.activeMockVehicleJourney.durationSeconds * (1 - safeProgress));
+
+    this.mockVehicleCurrentLatLng = currentLatLng;
+    this.renderMockVehicleApproachLine(remainingLatLngs, currentLatLng, pickupLatLng);
+    this.renderRideVehicleMarker(currentLatLng, bearingDegrees);
+
+    if (fitViewport) {
+      this.syncRideViewport(true);
+    }
+
+    if (safeProgress >= 1) {
+      if (this.bookingBookedTitle) {
+        this.bookingBookedTitle.textContent = RIDE_BOOKED_TITLE_HERE;
+      }
+
+      this.updateBookingStopTimes({
+        pickupTimeText: "Now",
+        destinationTimeText: formatMinutes(this.activeRideRoute?.durationSeconds) || "~ min",
+      });
+      return;
+    }
+
+    if (this.bookingBookedTitle) {
+      this.bookingBookedTitle.textContent = formatRideArrivalTitle(remainingDurationSeconds);
+    }
+
+    this.updateBookingStopTimes({
+      pickupTimeText: formatMinutes(remainingDurationSeconds) || "~ min",
+      destinationTimeText:
+        formatMinutes((this.activeRideRoute?.durationSeconds ?? 0) + remainingDurationSeconds) || "~ min",
+    });
+  }
+
+  renderMockVehicleApproachLine(remainingLatLngs, currentLatLng, pickupLatLng) {
+    if (!this.map || typeof window.L === "undefined") {
+      return;
+    }
+
+    const approachLatLngs =
+      Array.isArray(remainingLatLngs) && remainingLatLngs.length >= 2
+        ? remainingLatLngs
+        : currentLatLng && pickupLatLng && getLatLngDistanceMeters(currentLatLng, pickupLatLng) > 1
+          ? [currentLatLng, pickupLatLng]
+          : [];
+
+    if (!this.rideApproachOutlineLine) {
+      this.rideApproachOutlineLine = window.L.polyline(approachLatLngs, {
+        color: MOCK_VEHICLE_APPROACH_BORDER_COLOR,
+        interactive: false,
+        lineCap: "round",
+        lineJoin: "round",
+        opacity: 0.98,
+        pane: "rideApproachPane",
+        smoothFactor: 1,
+        weight: 7,
+      }).addTo(this.map);
+    } else {
+      this.rideApproachOutlineLine.setLatLngs(approachLatLngs);
+    }
+
+    if (!this.rideApproachLine) {
+      this.rideApproachLine = window.L.polyline(approachLatLngs, {
+        color: MOCK_VEHICLE_APPROACH_COLOR,
+        interactive: false,
+        lineCap: "round",
+        lineJoin: "round",
+        opacity: 1,
+        pane: "rideApproachPane",
+        smoothFactor: 1,
+        weight: 5,
+      }).addTo(this.map);
+      return;
+    }
+
+    this.rideApproachLine.setLatLngs(approachLatLngs);
+  }
+
+  renderRideVehicleMarker(latLng, bearingDegrees) {
+    if (!latLng || !this.map || typeof window.L === "undefined") {
+      return;
+    }
+
+    const icon = window.L.divIcon({
+      className: "ride-vehicle-marker-wrapper",
+      html: `
+        <span class="ride-vehicle-marker" style="--ride-vehicle-bearing: ${normalizeBearingDegrees(bearingDegrees + MOCK_VEHICLE_ASSET_BEARING_OFFSET_DEGREES)}deg;">
+          <span class="ride-vehicle-marker__shadow"></span>
+          <img class="ride-vehicle-marker__car" src="./when-driving-model-3-black-white-asset.svg" alt="" />
+        </span>
+      `,
+      iconAnchor: [38, 20],
+      iconSize: [76, 40],
+    });
+
+    if (!this.rideVehicleMarker) {
+      this.rideVehicleMarker = window.L.marker(latLng, {
+        icon,
+        interactive: false,
+        keyboard: false,
+        pane: "rideVehiclePane",
+        zIndexOffset: 1280,
+      }).addTo(this.map);
+      return;
+    }
+
+    this.rideVehicleMarker.setLatLng(latLng);
+    this.rideVehicleMarker.setIcon(icon);
   }
 
   startRoutePulse(routeLatLngs) {
