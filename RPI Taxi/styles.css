@@ -308,6 +308,75 @@ robotaxi-map,
   opacity: 0.72;
 }
 
+.map-zoom-controls {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 5.1rem);
+  right: calc(env(safe-area-inset-right, 0px) + 1.05rem);
+  z-index: 970;
+  display: grid;
+  overflow: hidden;
+  width: 2.82rem;
+  border: 1px solid rgba(70, 72, 77, 0.74);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(30, 31, 34, 0.38), rgba(17, 18, 21, 0.5)),
+    rgba(18, 19, 21, 0.34);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(4px) saturate(106%);
+  -webkit-backdrop-filter: blur(4px) saturate(106%);
+}
+
+.map-zoom-controls__button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 2.62rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(246, 247, 249, 0.96);
+  cursor: pointer;
+  font-family: "Tesla Sans Display", "Tesla Sans Text", sans-serif;
+  font-size: 1.52rem;
+  line-height: 1;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.map-zoom-controls__button + .map-zoom-controls__button {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.map-zoom-controls__button:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.map-zoom-controls__button:disabled {
+  cursor: default;
+  opacity: 0.34;
+}
+
+.map-screen[data-theme="light"] .map-zoom-controls {
+  border-color: rgba(168, 171, 178, 0.74);
+  background:
+    linear-gradient(180deg, rgba(249, 249, 251, 0.72), rgba(232, 233, 237, 0.66)),
+    rgba(245, 246, 248, 0.46);
+  box-shadow:
+    0 18px 44px rgba(112, 116, 126, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.map-screen[data-theme="light"] .map-zoom-controls__button {
+  color: rgba(37, 39, 43, 0.92);
+}
+
+.map-screen[data-theme="light"] .map-zoom-controls__button + .map-zoom-controls__button {
+  border-top-color: rgba(65, 68, 75, 0.12);
+}
+
 .ride-booked-notification {
   position: absolute;
   top: calc(env(safe-area-inset-top, 0px) + 1.62rem);
@@ -538,6 +607,10 @@ robotaxi-map,
   transition: transform 340ms cubic-bezier(0.22, 0.82, 0.2, 1);
 }
 
+.ride-sheet__surface.is-booked-dragging {
+  transition: none;
+}
+
 .ride-sheet[data-sheet-state="compact"] .ride-sheet__surface {
   max-height: min(56svh, 32rem);
 }
@@ -731,6 +804,16 @@ robotaxi-map,
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(4px) saturate(106%);
   -webkit-backdrop-filter: blur(4px) saturate(106%);
+}
+
+.ride-booking.is-arriving .ride-booking-card {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.ride-sheet__surface.is-booked-dragging .ride-booking-card {
+  cursor: grabbing;
 }
 
 .ride-booking-card__eta {

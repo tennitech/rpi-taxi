@@ -65,20 +65,34 @@ const RIDE_BOOKED_VEHICLE_REVEAL_DELAY_MS = 5000;
 const RIDE_BOOKED_NOTIFICATION_DURATION_MS = 3800;
 const RIDE_BOOKED_NOTIFICATION_EXIT_DURATION_MS = 240;
 const RIDE_BOOKED_SCROLL_DURATION_MS = 340;
+const RIDE_BOOKED_AUTO_COLLAPSE_DELAY_MS = 5000;
+const RIDE_BOOKED_DRAG_TAP_THRESHOLD_PX = 8;
+const RIDE_BOOKED_DRAG_VELOCITY_THRESHOLD_PX_PER_MS = 0.28;
 const RIDE_CANCEL_DELAY_MS = 3000;
 const RIDE_BOOKED_MIN_TOP_PX = 14;
 const RIDE_BOOKED_BOTTOM_GAP_PX = 42;
 const RIDE_BOOKED_TITLE_DEFAULT = "Your ride is booked";
 const RIDE_BOOKED_TITLE_ARRIVING = "Ride is ~ min away";
 const RIDE_BOOKED_TITLE_HERE = "Ride is here";
-const MOCK_VEHICLE_POLL_MIN_MS = 900;
-const MOCK_VEHICLE_POLL_MAX_MS = 1800;
-const MOCK_VEHICLE_SIMULATION_MIN_MS = 9000;
-const MOCK_VEHICLE_SIMULATION_MAX_MS = 16000;
+const RIDE_ROUTE_CHIP_EDGE_PADDING_PX = 124;
+const MOCK_VEHICLE_POLL_MIN_MS = 220;
+const MOCK_VEHICLE_POLL_MAX_MS = 420;
+const MOCK_VEHICLE_SIMULATION_MIN_MS = 42000;
+const MOCK_VEHICLE_SIMULATION_MAX_MS = 68000;
 const MOCK_VEHICLE_MIN_DURATION_SECONDS = 70;
 const MOCK_VEHICLE_MAX_DURATION_SECONDS = 330;
 const MOCK_VEHICLE_TARGET_DURATION_SECONDS = 170;
 const MOCK_VEHICLE_LOOKAHEAD_METERS = 18;
+const MOCK_VEHICLE_VIEWPORT_EDGE_PADDING_PX = 48;
+const MOCK_VEHICLE_VIEWPORT_EDGE_COOLDOWN_MS = 2600;
+const MOCK_VEHICLE_VIEWPORT_FIT_DURATION_MS = 480;
+const MOCK_VEHICLE_VIEWPORT_BATCHES = [
+  { progress: 0, zoom: 17.25 },
+  { progress: 0.32, zoom: 17.55 },
+  { progress: 0.62, zoom: 17.85 },
+  { progress: 0.84, zoom: 18.15 },
+  { progress: 0.96, zoom: 18.45 },
+];
 const MOCK_VEHICLE_APPROACH_COLOR = "#3A6BE6";
 const MOCK_VEHICLE_APPROACH_BORDER_COLOR = "#064086";
 const MOCK_VEHICLE_ASSET_BEARING_OFFSET_DEGREES = -90;
@@ -251,6 +265,10 @@ const template = String.raw`
       <button class="ride-map-button ride-map-button--menu" type="button" data-destination-menu hidden aria-label="Menu">
         <img class="ride-map-button__icon" src="./icons/06-menu.svg" alt="" aria-hidden="true" />
       </button>
+      <div class="map-zoom-controls" data-map-occlusion="true" role="group" aria-label="Map zoom">
+        <button class="map-zoom-controls__button" type="button" data-map-zoom-in aria-label="Zoom in">+</button>
+        <button class="map-zoom-controls__button" type="button" data-map-zoom-out aria-label="Zoom out">&minus;</button>
+      </div>
       <section
         class="ride-booked-notification"
         data-booked-notification
@@ -988,6 +1006,9 @@ class RobotaxiMap extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener("resize", this.handleResize);
+    this.map?.off("zoomend", this.updateMapZoomControlState);
+    this.mapZoomInButton?.removeEventListener("click", this.handleMapZoomIn);
+    this.mapZoomOutButton?.removeEventListener("click", this.handleMapZoomOut);
     this.stopLocationTracking();
     this.teardownRideSheet();
   }
@@ -1003,9 +1024,11 @@ class RobotaxiMap extends HTMLElement {
       attributionControl: false,
       bounceAtZoomLimits: false,
       inertia: true,
+      maxZoom: 20,
       preferCanvas: true,
       worldCopyJump: false,
       zoomControl: false,
+      zoomDelta: 0.5,
       maxBoundsViscosity: 0.72,
       zoomSnap: 0.25,
     });
@@ -1093,8 +1116,67 @@ class RobotaxiMap extends HTMLElement {
     this.applyTheme("dark");
 
     this.updateResponsiveZoomBounds(true);
+    this.setupMapZoomControls();
     window.addEventListener("resize", this.handleResize, { passive: true });
   }
+
+  setupMapZoomControls() {
+    this.mapZoomInButton = this.querySelector("[data-map-zoom-in]");
+    this.mapZoomOutButton = this.querySelector("[data-map-zoom-out]");
+
+    this.mapZoomInButton?.addEventListener("click", this.handleMapZoomIn);
+    this.mapZoomOutButton?.addEventListener("click", this.handleMapZoomOut);
+    this.map?.on("zoomend", this.updateMapZoomControlState);
+    this.updateMapZoomControlState();
+  }
+
+  handleMapZoomIn = () => {
+    this.zoomMapBy(0.75);
+  };
+
+  handleMapZoomOut = () => {
+    this.zoomMapBy(-0.75);
+  };
+
+  zoomMapBy(delta) {
+    if (!this.map) {
+      return;
+    }
+
+    const minZoom = this.map.getMinZoom();
+    const maxZoom = this.map.getMaxZoom();
+    const nextZoom = clampNumber(this.map.getZoom() + delta, minZoom, maxZoom);
+    const focusPoint = this.getPrimaryAvailableMapFocusPoint();
+
+    if (focusPoint) {
+      this.map.setZoomAround(focusPoint, nextZoom, {
+        animate: true,
+      });
+      return;
+    }
+
+    this.map.setZoom(nextZoom, {
+      animate: true,
+    });
+  }
+
+  updateMapZoomControlState = () => {
+    if (!this.map) {
+      return;
+    }
+
+    const zoom = this.map.getZoom();
+    const minZoom = this.map.getMinZoom();
+    const maxZoom = this.map.getMaxZoom();
+
+    if (this.mapZoomInButton) {
+      this.mapZoomInButton.disabled = zoom >= maxZoom - 0.01;
+    }
+
+    if (this.mapZoomOutButton) {
+      this.mapZoomOutButton.disabled = zoom <= minZoom + 0.01;
+    }
+  };
 
   setupEntryActions() {
     const actionButtons = [...this.querySelectorAll("[data-enter-mode]")];
@@ -1286,7 +1368,15 @@ class RobotaxiMap extends HTMLElement {
     );
   }
 
-  getAvailableFitBoundsOptions({ animate = false, extraPaddingBottom = 0, extraPaddingTop = 0 } = {}) {
+  getAvailableFitBoundsOptions(
+    {
+      animate = false,
+      extraPaddingBottom = 0,
+      extraPaddingLeft = 0,
+      extraPaddingRight = 0,
+      extraPaddingTop = 0,
+    } = {},
+  ) {
     const fallbackPadding = this.getResponsivePadding();
 
     if (!this.map) {
@@ -1312,11 +1402,11 @@ class RobotaxiMap extends HTMLElement {
     return {
       animate,
       paddingBottomRight: [
-        Math.round(size.x - primaryRect.right + horizontalPadding),
+        Math.round(size.x - primaryRect.right + horizontalPadding + extraPaddingRight),
         Math.round(size.y - primaryRect.bottom + verticalPadding + extraPaddingBottom),
       ],
       paddingTopLeft: [
-        Math.round(primaryRect.left + horizontalPadding),
+        Math.round(primaryRect.left + horizontalPadding + extraPaddingLeft),
         Math.round(primaryRect.top + verticalPadding + extraPaddingTop),
       ],
     };
@@ -1421,7 +1511,15 @@ class RobotaxiMap extends HTMLElement {
 
   fitLatLngsInAvailableMap(
     latLngs,
-    { animate = true, duration = 0.65, extraPaddingBottom = 0, extraPaddingTop = 0, maxZoom = null } = {},
+    {
+      animate = true,
+      duration = 0.65,
+      extraPaddingBottom = 0,
+      extraPaddingLeft = 0,
+      extraPaddingRight = 0,
+      extraPaddingTop = 0,
+      maxZoom = null,
+    } = {},
   ) {
     if (!this.map || typeof window.L === "undefined") {
       return;
@@ -1442,7 +1540,13 @@ class RobotaxiMap extends HTMLElement {
     }
 
     this.map.fitBounds(window.L.latLngBounds(validLatLngs), {
-      ...this.getAvailableFitBoundsOptions({ animate, extraPaddingBottom, extraPaddingTop }),
+      ...this.getAvailableFitBoundsOptions({
+        animate,
+        extraPaddingBottom,
+        extraPaddingLeft,
+        extraPaddingRight,
+        extraPaddingTop,
+      }),
       duration,
       ...(Number.isFinite(maxZoom) ? { maxZoom } : {}),
     });
@@ -1464,6 +1568,7 @@ class RobotaxiMap extends HTMLElement {
         ...this.getAvailableFitBoundsOptions({ animate: false }),
       });
       this.map.setMinZoom(Math.min(this.map.getZoom(), 15.5));
+      this.updateMapZoomControlState();
       return;
     }
 
@@ -1474,6 +1579,8 @@ class RobotaxiMap extends HTMLElement {
         animate: false,
       });
     }
+
+    this.updateMapZoomControlState();
   }
 
   handleResize = () => {
@@ -1550,6 +1657,7 @@ class RobotaxiMap extends HTMLElement {
     this.rideBookedNotificationResetTimeout = null;
     this.rideBookedTitleSwapTimeout = null;
     this.rideBookedScrollFrame = null;
+    this.rideBookedCollapseTimeout = null;
     this.rideVehicleRevealTimeout = null;
     this.mockVehiclePollTimeout = null;
     this.cancelRideTimeout = null;
@@ -1561,6 +1669,14 @@ class RobotaxiMap extends HTMLElement {
     this.mockVehicleJourneyPromise = null;
     this.mockVehiclePlanToken = 0;
     this.mockVehicleCurrentLatLng = null;
+    this.mockVehicleProgress = 0;
+    this.mockVehicleViewportBatchIndex = -1;
+    this.mockVehicleLastViewportLatLng = null;
+    this.mockVehicleLastViewportUpdateAt = 0;
+    this.rideBookedCollapsedOffset = 0;
+    this.rideBookedExpandedOffset = 0;
+    this.rideBookedUserSheetControlEnabled = false;
+    this.rideBookedSheetDrag = null;
 
     this.destinationForm.addEventListener("submit", this.handleDestinationSubmit);
     this.destinationInput.addEventListener("focus", this.handleDestinationFocus);
@@ -1570,6 +1686,10 @@ class RobotaxiMap extends HTMLElement {
     this.destinationCloseButton.addEventListener("click", this.resetDestinationPicker);
     this.bookRideButton.addEventListener("pointerup", this.handleBookRideRelease);
     this.bookRideButton.addEventListener("click", this.handleBookRide);
+    this.rideSheetSurface.addEventListener("pointerdown", this.handleRideSheetPointerDown);
+    this.rideSheetSurface.addEventListener("pointermove", this.handleRideSheetPointerMove);
+    this.rideSheetSurface.addEventListener("pointerup", this.handleRideSheetPointerUp);
+    this.rideSheetSurface.addEventListener("pointercancel", this.handleRideSheetPointerCancel);
     this.cancelRideButton.addEventListener("click", this.handleCancelRideButton);
     this.cancelRideDialog.addEventListener("click", this.handleCancelRideDialogClick);
     this.cancelRideConfirmButton.addEventListener("click", this.handleCancelRideConfirm);
@@ -1599,6 +1719,7 @@ class RobotaxiMap extends HTMLElement {
     this.clearRideBookedNotificationResetTimeout();
     this.clearRideBookedTitleSwapTimeout();
     this.clearRideBookedScrollFrame();
+    this.clearRideBookedCollapseTimeout();
     this.clearRideVehicleRevealTimeout();
     this.clearMockVehiclePollTimeout();
     this.clearCancelRideTimeout();
@@ -1622,6 +1743,13 @@ class RobotaxiMap extends HTMLElement {
     if (this.bookRideButton) {
       this.bookRideButton.removeEventListener("pointerup", this.handleBookRideRelease);
       this.bookRideButton.removeEventListener("click", this.handleBookRide);
+    }
+
+    if (this.rideSheetSurface) {
+      this.rideSheetSurface.removeEventListener("pointerdown", this.handleRideSheetPointerDown);
+      this.rideSheetSurface.removeEventListener("pointermove", this.handleRideSheetPointerMove);
+      this.rideSheetSurface.removeEventListener("pointerup", this.handleRideSheetPointerUp);
+      this.rideSheetSurface.removeEventListener("pointercancel", this.handleRideSheetPointerCancel);
     }
 
     if (this.cancelRideButton) {
@@ -1765,6 +1893,15 @@ class RobotaxiMap extends HTMLElement {
 
     window.cancelAnimationFrame(this.rideBookedScrollFrame);
     this.rideBookedScrollFrame = null;
+  }
+
+  clearRideBookedCollapseTimeout() {
+    if (this.rideBookedCollapseTimeout === null) {
+      return;
+    }
+
+    window.clearTimeout(this.rideBookedCollapseTimeout);
+    this.rideBookedCollapseTimeout = null;
   }
 
   clearRideVehicleRevealTimeout() {
@@ -1928,19 +2065,93 @@ class RobotaxiMap extends HTMLElement {
     });
   }
 
-  syncRideViewport(animate = false) {
+  syncRideViewport(animate = false, { progress = this.mockVehicleProgress } = {}) {
     if (this.activeMockVehicleJourney?.pickupLatLng && this.mockVehicleCurrentLatLng) {
+      const batch = this.getMockVehicleViewportBatch(progress);
+
       this.fitLatLngsInAvailableMap([this.mockVehicleCurrentLatLng, this.activeMockVehicleJourney.pickupLatLng], {
         animate,
-        duration: animate ? 0.55 : 0,
-        extraPaddingBottom: 56,
-        extraPaddingTop: 24,
-        maxZoom: 16.8,
+        duration: animate ? MOCK_VEHICLE_VIEWPORT_FIT_DURATION_MS / 1000 : 0,
+        extraPaddingBottom: 54,
+        extraPaddingLeft: RIDE_ROUTE_CHIP_EDGE_PADDING_PX,
+        extraPaddingRight: RIDE_ROUTE_CHIP_EDGE_PADDING_PX,
+        extraPaddingTop: 22,
+        maxZoom: batch.zoom,
       });
       return;
     }
 
     this.syncSelectedDestinationViewport(animate);
+  }
+
+  getMockVehicleViewportBatchIndex(progress = this.mockVehicleProgress) {
+    const safeProgress = clampNumber(progress, 0, 1);
+    let batchIndex = 0;
+
+    for (let index = 0; index < MOCK_VEHICLE_VIEWPORT_BATCHES.length; index += 1) {
+      if (safeProgress >= MOCK_VEHICLE_VIEWPORT_BATCHES[index].progress) {
+        batchIndex = index;
+      }
+    }
+
+    return batchIndex;
+  }
+
+  getMockVehicleViewportBatch(progress = this.mockVehicleProgress) {
+    return (
+      MOCK_VEHICLE_VIEWPORT_BATCHES[this.getMockVehicleViewportBatchIndex(progress)] ??
+      MOCK_VEHICLE_VIEWPORT_BATCHES[0]
+    );
+  }
+
+  markMockVehicleViewportSync(currentLatLng, progress = this.mockVehicleProgress) {
+    this.mockVehicleLastViewportLatLng = currentLatLng ?? null;
+    this.mockVehicleLastViewportUpdateAt = Date.now();
+    this.mockVehicleViewportBatchIndex = this.getMockVehicleViewportBatchIndex(progress);
+  }
+
+  shouldSyncMockVehicleViewport(currentLatLng, pickupLatLng, progress = this.mockVehicleProgress) {
+    if (!currentLatLng || !pickupLatLng) {
+      return false;
+    }
+
+    const now = Date.now();
+    const nextBatchIndex = this.getMockVehicleViewportBatchIndex(progress);
+
+    if (!this.mockVehicleLastViewportLatLng) {
+      return true;
+    }
+
+    if (nextBatchIndex > this.mockVehicleViewportBatchIndex) {
+      return true;
+    }
+
+    const isPastEdgeCooldown =
+      now - (this.mockVehicleLastViewportUpdateAt ?? 0) >= MOCK_VEHICLE_VIEWPORT_EDGE_COOLDOWN_MS;
+    const edgePaddingPx = Math.max(MOCK_VEHICLE_VIEWPORT_EDGE_PADDING_PX, RIDE_ROUTE_CHIP_EDGE_PADDING_PX);
+    const isVehicleNearEdge = !this.isLatLngInPrimaryAvailableMap(currentLatLng, edgePaddingPx);
+    const isPickupNearEdge = !this.isLatLngInPrimaryAvailableMap(pickupLatLng, edgePaddingPx);
+
+    return isPastEdgeCooldown && (isVehicleNearEdge || isPickupNearEdge);
+  }
+
+  isLatLngInPrimaryAvailableMap(latLng, edgePaddingPx = 0) {
+    if (!this.map || !latLng) {
+      return false;
+    }
+
+    const primaryRect = this.getPrimaryAvailableMapRect();
+    if (!primaryRect) {
+      return false;
+    }
+
+    const point = this.map.latLngToContainerPoint(latLng);
+    return (
+      point.x >= primaryRect.left + edgePaddingPx &&
+      point.x <= primaryRect.right - edgePaddingPx &&
+      point.y >= primaryRect.top + edgePaddingPx &&
+      point.y <= primaryRect.bottom - edgePaddingPx
+    );
   }
 
   updateRideSheetViewport() {
@@ -2028,6 +2239,131 @@ class RobotaxiMap extends HTMLElement {
     this.rideSheetSurface.style.setProperty("--ride-surface-offset-y", `${offsetY}px`);
   }
 
+  getRideBookedCollapsedOffset() {
+    return Number.isFinite(this.rideBookedCollapsedOffset) ? this.rideBookedCollapsedOffset : 0;
+  }
+
+  getRideBookedExpandedOffset() {
+    return Number.isFinite(this.rideBookedExpandedOffset) ? this.rideBookedExpandedOffset : this.getRideSheetSurfaceOffset();
+  }
+
+  clampRideBookedSheetOffset(offsetY) {
+    const expandedOffset = this.getRideBookedExpandedOffset();
+    const collapsedOffset = this.getRideBookedCollapsedOffset();
+    const minOffset = Math.min(expandedOffset, collapsedOffset);
+    const maxOffset = Math.max(expandedOffset, collapsedOffset);
+    return clampNumber(offsetY, minOffset, maxOffset);
+  }
+
+  snapRideBookedSheetToOffset(offsetY) {
+    if (!this.rideSheetSurface || !Number.isFinite(offsetY)) {
+      return;
+    }
+
+    this.rideSheetSurface.classList.remove("is-booked-dragging");
+    this.rideSheetSurface.classList.add("is-booked-scrolling");
+    this.setRideSheetSurfaceOffset(this.clampRideBookedSheetOffset(offsetY));
+    this.clearRideBookedTransitionTimeout();
+    this.rideBookedTransitionTimeout = window.setTimeout(() => {
+      this.rideBookedTransitionTimeout = null;
+      this.rideSheetSurface?.classList.remove("is-booked-scrolling");
+    }, RIDE_BOOKED_SCROLL_DURATION_MS + 40);
+  }
+
+  isRideBookedSheetGestureTarget(target) {
+    if (!target || !this.rideSheetSurface?.contains(target)) {
+      return false;
+    }
+
+    if (target.closest("button, input, a, textarea, select, [data-cancel-ride-button], .ride-booked-tips__scroller")) {
+      return false;
+    }
+
+    return Boolean(target.closest(".ride-booking-card, .ride-booked-tips__title, .ride-sheet__surface"));
+  }
+
+  handleRideSheetPointerDown = (event) => {
+    if (
+      !this.rideBookedUserSheetControlEnabled ||
+      !this.isRideBookedActive() ||
+      !this.isRideBookedSheetGestureTarget(event.target)
+    ) {
+      return;
+    }
+
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+
+    this.clearRideBookedCollapseTimeout();
+    this.clearRideBookedTransitionTimeout();
+    this.rideSheetSurface.classList.remove("is-booked-scrolling");
+    this.rideSheetSurface.classList.add("is-booked-dragging");
+    this.rideSheetSurface.setPointerCapture?.(event.pointerId);
+    this.rideBookedSheetDrag = {
+      lastTime: event.timeStamp,
+      lastY: event.clientY,
+      pointerId: event.pointerId,
+      startOffset: this.getRideSheetSurfaceOffset(),
+      startY: event.clientY,
+      velocityY: 0,
+    };
+  };
+
+  handleRideSheetPointerMove = (event) => {
+    if (!this.rideBookedSheetDrag || this.rideBookedSheetDrag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const drag = this.rideBookedSheetDrag;
+    const deltaY = event.clientY - drag.startY;
+    const deltaTime = Math.max(1, event.timeStamp - drag.lastTime);
+    drag.velocityY = (event.clientY - drag.lastY) / deltaTime;
+    drag.lastY = event.clientY;
+    drag.lastTime = event.timeStamp;
+    this.setRideSheetSurfaceOffset(this.clampRideBookedSheetOffset(drag.startOffset + deltaY));
+    event.preventDefault();
+  };
+
+  handleRideSheetPointerUp = (event) => {
+    if (!this.rideBookedSheetDrag || this.rideBookedSheetDrag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const drag = this.rideBookedSheetDrag;
+    this.rideBookedSheetDrag = null;
+    this.rideSheetSurface?.releasePointerCapture?.(event.pointerId);
+    const currentOffset = this.getRideSheetSurfaceOffset();
+    const expandedOffset = this.getRideBookedExpandedOffset();
+    const collapsedOffset = this.getRideBookedCollapsedOffset();
+    const movedY = event.clientY - drag.startY;
+    let targetOffset;
+
+    if (Math.abs(movedY) <= RIDE_BOOKED_DRAG_TAP_THRESHOLD_PX) {
+      const isCloserToExpanded = Math.abs(currentOffset - expandedOffset) < Math.abs(currentOffset - collapsedOffset);
+      targetOffset = isCloserToExpanded ? collapsedOffset : expandedOffset;
+    } else if (drag.velocityY <= -RIDE_BOOKED_DRAG_VELOCITY_THRESHOLD_PX_PER_MS) {
+      targetOffset = expandedOffset;
+    } else if (drag.velocityY >= RIDE_BOOKED_DRAG_VELOCITY_THRESHOLD_PX_PER_MS) {
+      targetOffset = collapsedOffset;
+    } else {
+      const midpoint = (expandedOffset + collapsedOffset) / 2;
+      targetOffset = currentOffset <= midpoint ? expandedOffset : collapsedOffset;
+    }
+
+    this.snapRideBookedSheetToOffset(targetOffset);
+  };
+
+  handleRideSheetPointerCancel = (event) => {
+    if (!this.rideBookedSheetDrag || this.rideBookedSheetDrag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    this.rideBookedSheetDrag = null;
+    this.rideSheetSurface?.releasePointerCapture?.(event.pointerId);
+    this.snapRideBookedSheetToOffset(this.getRideBookedCollapsedOffset());
+  };
+
   alignRideSheetSurfaceTop(targetTop) {
     if (!this.rideSheetSurface || !Number.isFinite(targetTop)) {
       return;
@@ -2045,8 +2381,13 @@ class RobotaxiMap extends HTMLElement {
     this.hideRideBookedNotification(true);
     this.clearRideBookedTitleSwapTimeout();
     this.clearRideBookedScrollFrame();
+    this.clearRideBookedCollapseTimeout();
     this.stopMockVehicleTracking({ clearJourney: false, invalidate: false });
-    this.rideSheetSurface?.classList.remove("is-booked-scrolling");
+    this.rideBookedSheetDrag = null;
+    this.rideBookedCollapsedOffset = 0;
+    this.rideBookedExpandedOffset = 0;
+    this.rideBookedUserSheetControlEnabled = false;
+    this.rideSheetSurface?.classList.remove("is-booked-scrolling", "is-booked-dragging");
     this.bookingPanel?.classList.remove("is-arriving");
 
     if (this.bookingBookedTitle) {
@@ -2068,6 +2409,7 @@ class RobotaxiMap extends HTMLElement {
   finishRideBookedAutoScroll() {
     this.clearRideBookedTransitionTimeout();
     this.rideSheetSurface?.classList.remove("is-booked-scrolling");
+    this.rideBookedExpandedOffset = this.getRideSheetSurfaceOffset();
     this.bookingPanel?.classList.add("is-arriving");
 
     if (!this.bookingBookedTitle || this.bookingBookedTitle.textContent === RIDE_BOOKED_TITLE_ARRIVING) {
@@ -2077,6 +2419,24 @@ class RobotaxiMap extends HTMLElement {
     this.clearRideBookedTitleSwapTimeout();
     this.bookingBookedTitle.textContent = RIDE_BOOKED_TITLE_ARRIVING;
     this.scheduleRideVehicleReveal();
+    this.scheduleRideBookedAutoCollapse();
+  }
+
+  scheduleRideBookedAutoCollapse() {
+    this.clearRideBookedCollapseTimeout();
+    this.rideBookedCollapseTimeout = window.setTimeout(() => {
+      this.rideBookedCollapseTimeout = null;
+      this.collapseRideBookedSheet();
+    }, RIDE_BOOKED_AUTO_COLLAPSE_DELAY_MS);
+  }
+
+  collapseRideBookedSheet() {
+    if (!this.isRideBookedActive() || !this.rideSheetSurface) {
+      return;
+    }
+
+    this.rideBookedUserSheetControlEnabled = true;
+    this.snapRideBookedSheetToOffset(this.getRideBookedCollapsedOffset());
   }
 
   startRideBookedAutoScroll() {
@@ -2316,6 +2676,8 @@ class RobotaxiMap extends HTMLElement {
     if (Number.isFinite(selectedTop)) {
       window.requestAnimationFrame(() => {
         this.alignRideSheetSurfaceTop(selectedTop);
+        this.rideBookedCollapsedOffset = this.getRideSheetSurfaceOffset();
+        this.rideBookedExpandedOffset = this.rideBookedCollapsedOffset;
         this.updateRideSheetMetrics();
         this.updateBookedTipsOverflowMask();
         this.clearRideBookedArrivalDelayTimeout();
@@ -2334,6 +2696,8 @@ class RobotaxiMap extends HTMLElement {
     this.clearRideBookedArrivalDelayTimeout();
     this.rideBookedArrivalDelayTimeout = window.setTimeout(() => {
       this.rideBookedArrivalDelayTimeout = null;
+      this.rideBookedCollapsedOffset = this.getRideSheetSurfaceOffset();
+      this.rideBookedExpandedOffset = this.rideBookedCollapsedOffset;
       this.updateBookedTipsOverflowMask();
       this.finishRideBookedAutoScroll();
     }, RIDE_BOOKED_ARRIVAL_DELAY_MS);
@@ -3028,8 +3392,10 @@ class RobotaxiMap extends HTMLElement {
       animate: true,
       duration: 0.65,
       extraPaddingBottom: 68,
+      extraPaddingLeft: RIDE_ROUTE_CHIP_EDGE_PADDING_PX,
+      extraPaddingRight: RIDE_ROUTE_CHIP_EDGE_PADDING_PX,
       extraPaddingTop: 68,
-      maxZoom: 14.25,
+      maxZoom: 16.75,
     });
   }
 
@@ -3264,7 +3630,7 @@ class RobotaxiMap extends HTMLElement {
           pickupLatLng: candidateRoute.dropoffLatLng ?? pickupLatLng,
           routeLatLngs,
           simulationDurationMs: clampNumber(
-            durationSeconds * getRandomNumber(34, 46),
+            durationSeconds * getRandomNumber(260, 340),
             MOCK_VEHICLE_SIMULATION_MIN_MS,
             MOCK_VEHICLE_SIMULATION_MAX_MS,
           ),
@@ -3301,7 +3667,7 @@ class RobotaxiMap extends HTMLElement {
       measures: fallbackMeasures,
       pickupLatLng,
       routeLatLngs: fallbackRouteLatLngs,
-      simulationDurationMs: 10_500,
+      simulationDurationMs: 52_000,
     };
   }
 
@@ -3317,7 +3683,7 @@ class RobotaxiMap extends HTMLElement {
           getRandomNumber(-22, 22) +
           (index >= approachOffsets.length ? getRandomNumber(-130, 130) : 0),
       );
-      const distanceMeters = getRandomNumber(index < 4 ? 260 : 340, index < 7 ? 780 : 1200);
+      const distanceMeters = getRandomNumber(index < 4 ? 120 : 180, index < 7 ? 420 : 640);
       const candidate = offsetLatLng(pickupLatLng, distanceMeters, bearing);
 
       if (!candidate || !this.isWithinGeofence(candidate.lat, candidate.lng)) {
@@ -3381,6 +3747,10 @@ class RobotaxiMap extends HTMLElement {
     this.clearMockVehiclePollTimeout();
     this.mockVehicleSimulationStartedAt = null;
     this.mockVehicleCurrentLatLng = null;
+    this.mockVehicleProgress = 0;
+    this.mockVehicleViewportBatchIndex = -1;
+    this.mockVehicleLastViewportLatLng = null;
+    this.mockVehicleLastViewportUpdateAt = 0;
 
     ["rideApproachOutlineLine", "rideApproachLine", "rideVehicleMarker"].forEach((propertyName) => {
       const layer = this[propertyName];
@@ -3445,13 +3815,16 @@ class RobotaxiMap extends HTMLElement {
           );
     const bearingDegrees = getBearingBetweenLatLngs(currentLatLng, nextBearingTarget);
     const remainingDurationSeconds = Math.max(0, this.activeMockVehicleJourney.durationSeconds * (1 - safeProgress));
+    const shouldFitViewport = fitViewport || this.shouldSyncMockVehicleViewport(currentLatLng, pickupLatLng, safeProgress);
 
+    this.mockVehicleProgress = safeProgress;
     this.mockVehicleCurrentLatLng = currentLatLng;
     this.renderMockVehicleApproachLine(remainingLatLngs, currentLatLng, pickupLatLng);
     this.renderRideVehicleMarker(currentLatLng, bearingDegrees);
 
-    if (fitViewport) {
-      this.syncRideViewport(true);
+    if (shouldFitViewport) {
+      this.syncRideViewport(true, { progress: safeProgress });
+      this.markMockVehicleViewportSync(currentLatLng, safeProgress);
     }
 
     if (safeProgress >= 1) {
