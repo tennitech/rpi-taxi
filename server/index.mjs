@@ -1,33 +1,28 @@
 import { createServer } from "node:http";
-import { randomInt, randomUUID } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { deliverVerificationCode } from "./lib/email.mjs";
-import { loadLocalEnv } from "./lib/env.mjs";
-import { buildDefaultRide, buildFallbackRoute, calculateRoute, geocodeSearch } from "./lib/geo.mjs";
-import { JsonStateStore } from "./lib/state-store.mjs";
-import {
-  buildTeslaAuthorizeUrl,
-  buildTeslaKeyPairUrl,
-  buildTeslaShareText,
-  createTeslaOauthState,
-  exchangeTeslaCodeForTokens,
-  fetchTeslaVehicleData,
-  fetchTeslaVehicles,
-  getTeslaConfig,
-  isTeslaConfigured,
-  sendTeslaCommand,
-  sendTeslaOwnerApiShare,
-} from "./lib/tesla.mjs";
+import { SERVICE_AREA_COORDS } from "../RPI Taxi/geofence.js";
 
 const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const staticDir = path.join(projectRoot, "RPI Taxi");
-const stateFile = path.join(projectRoot, "data", "state.json");
-const outboxDir = path.join(projectRoot, "data", "outbox");
-
-loadLocalEnv(projectRoot);
+const appDir = path.join(projectRoot, "RPI Taxi");
+const fontsDir = path.join(projectRoot, "fonts");
+const DESTINATION_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const DESTINATION_SEARCH_CACHE_LIMIT = 200;
+const DESTINATION_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
+const ROUTE_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROUTE_TIMEOUT_MS = 4500;
+const VALHALLA_ROUTE_TIMEOUT_MS = 8000;
+const WALK_ROUTE_TIMEOUT_MS = 900;
+const ROUTE_CACHE_LIMIT = 200;
+const ROUTE_BASE_URL = "https://router.project-osrm.org/route/v1";
+const ROUTE_URL = `${ROUTE_BASE_URL}/driving`;
+const WALK_ROUTE_URL = `${ROUTE_BASE_URL}/foot`;
+const VALHALLA_ROUTE_URL = "https://valhalla1.openstreetmap.de/route";
+const WALK_FALLBACK_METERS_PER_SECOND = 1.35;
+const GEOFENCE_VIEWBOX = createGeofenceViewbox(SERVICE_AREA_COORDS.flat());
+const destinationSearchCache = new Map();
+const routeCache = new Map();
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -40,921 +35,569 @@ const contentTypes = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ttf": "font/ttf",
-  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
 };
 
-function json(response, statusCode, payload, headers = {}) {
-  response.writeHead(statusCode, {
-    "Cache-Control": "no-store",
-    "Content-Type": "application/json; charset=utf-8",
-    ...headers,
-  });
-  response.end(JSON.stringify(payload));
+function isSafePath(rootDir, candidatePath) {
+  const relativePath = path.relative(rootDir, candidatePath);
+  return relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
 }
 
-function text(response, statusCode, payload, contentType = "text/plain; charset=utf-8", headers = {}) {
-  response.writeHead(statusCode, {
-    "Cache-Control": "no-store",
-    "Content-Type": contentType,
-    ...headers,
-  });
-  response.end(payload);
+async function tryRead(filePath) {
+  await access(filePath);
+  return readFile(filePath);
 }
 
-function parseNumber(value, fallback) {
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) ? numericValue : fallback;
+function serve(response, statusCode, body, headers = {}) {
+  response.writeHead(statusCode, headers);
+  response.end(body);
 }
 
-function parseCookies(cookieHeader = "") {
-  return cookieHeader.split(/;\s*/u).reduce((accumulator, pair) => {
-    const separatorIndex = pair.indexOf("=");
-    if (separatorIndex === -1) {
-      return accumulator;
-    }
+function clampInteger(value, fallback, min, max) {
+  const parsedValue = Number.parseInt(String(value ?? ""), 10);
 
-    const key = pair.slice(0, separatorIndex).trim();
-    const value = pair.slice(separatorIndex + 1).trim();
-    if (key) {
-      accumulator[key] = decodeURIComponent(value);
-    }
-    return accumulator;
-  }, {});
-}
-
-function createSessionCookie(value, options = {}) {
-  const segments = [`${options.name}=${encodeURIComponent(value)}`, "Path=/", "HttpOnly", "SameSite=Lax"];
-  if (options.maxAge !== undefined) {
-    segments.push(`Max-Age=${Math.max(0, Math.floor(options.maxAge))}`);
-  }
-  if (options.expires) {
-    segments.push(`Expires=${options.expires.toUTCString()}`);
-  }
-  return segments.join("; ");
-}
-
-function createVerificationCode() {
-  return String(randomInt(100000, 1000000));
-}
-
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
-
-function sanitizeDisplayName(email, displayName) {
-  const normalized = String(displayName || "").trim();
-  if (normalized) {
-    return normalized;
-  }
-  return normalizeEmail(email).split("@")[0] || "RPI Rider";
-}
-
-function isAllowedRpiEmail(email, env = process.env) {
-  const domain = String(env.RPI_ALLOWED_EMAIL_DOMAIN || "rpi.edu").toLowerCase();
-  return normalizeEmail(email).endsWith(`@${domain}`);
-}
-
-function sortRides(rides) {
-  return [...rides].sort((left, right) => {
-    return new Date(right.updatedAt ?? right.createdAt ?? 0) - new Date(left.updatedAt ?? left.createdAt ?? 0);
-  });
-}
-
-function parseRidePayload(body) {
-  const defaultRide = buildDefaultRide();
-  const eta = parseNumber(body?.eta, defaultRide.eta);
-  const rideDuration = parseNumber(body?.rideDuration, defaultRide.rideDuration);
-
-  return {
-    pickupAddress: String(body?.pickupAddress ?? defaultRide.pickupAddress),
-    pickupLng: parseNumber(body?.pickupLng, defaultRide.pickupLng),
-    pickupLat: parseNumber(body?.pickupLat, defaultRide.pickupLat),
-    destAddress: String(body?.destAddress ?? defaultRide.destAddress),
-    destLng: parseNumber(body?.destLng, defaultRide.destLng),
-    destLat: parseNumber(body?.destLat, defaultRide.destLat),
-    eta,
-    rideDuration,
-    estimatedRideMin: parseNumber(body?.estimatedRideMin, rideDuration),
-    fare: String(body?.fare ?? "$0.00"),
-    arrivalTime: String(body?.arrivalTime ?? defaultRide.arrivalTime),
-    routeGeojson: body?.routeGeojson ?? null,
-  };
-}
-
-async function readJsonBody(request) {
-  const chunks = [];
-
-  for await (const chunk of request) {
-    chunks.push(chunk);
+  if (!Number.isFinite(parsedValue)) {
+    return fallback;
   }
 
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  const raw = Buffer.concat(chunks).toString("utf8");
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new Error("Invalid JSON body");
-  }
+  return Math.min(Math.max(parsedValue, min), max);
 }
 
-function getSessionContext(request, state, env = process.env) {
-  const cookies = parseCookies(request.headers.cookie);
-  const sessionCookieName = env.SESSION_COOKIE_NAME || "rpi_taxi_session";
-  const sessionId = cookies[sessionCookieName];
-  if (!sessionId) {
-    return { session: null, user: null };
-  }
-
-  const session = state.auth.sessions.find((candidate) => candidate.id === sessionId) ?? null;
-  const user = session ? state.auth.users.find((candidate) => candidate.id === session.userId) ?? null : null;
-  return { session, user };
+function parseCoordinate(value) {
+  const coordinate = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(coordinate) ? coordinate : null;
 }
 
-function sanitizeUser(user) {
-  if (!user) {
+function createGeofenceViewbox(coords) {
+  const bounds = coords.reduce(
+    (result, [lat, lng]) => {
+      return {
+        minLat: Math.min(result.minLat, lat),
+        maxLat: Math.max(result.maxLat, lat),
+        minLng: Math.min(result.minLng, lng),
+        maxLng: Math.max(result.maxLng, lng),
+      };
+    },
+    {
+      minLat: Number.POSITIVE_INFINITY,
+      maxLat: Number.NEGATIVE_INFINITY,
+      minLng: Number.POSITIVE_INFINITY,
+      maxLng: Number.NEGATIVE_INFINITY,
+    },
+  );
+
+  return `${bounds.minLng},${bounds.maxLat},${bounds.maxLng},${bounds.minLat}`;
+}
+
+function readDestinationSearchCache(cacheKey) {
+  const cachedEntry = destinationSearchCache.get(cacheKey);
+
+  if (!cachedEntry) {
     return null;
   }
 
-  return {
-    createdAt: user.createdAt,
-    displayName: user.displayName,
-    email: user.email,
-    id: user.id,
-    verifiedAt: user.verifiedAt,
-  };
-}
-
-function updateTeslaVehicleState(teslaState) {
-  teslaState.updatedAt = new Date().toISOString();
-  teslaState.vehicle_state.locked = teslaState.locked;
-  return teslaState;
-}
-
-function sanitizeTeslaConnection(connection, env = process.env) {
-  const config = getTeslaConfig(env);
-  const vehicleVin = config.vehicleVin || connection?.selectedVehicle?.vin || null;
-  return {
-    authorized: Boolean(connection?.tokens?.accessToken),
-    authorizedAt: connection?.authorizedAt ?? null,
-    commandProxyConfigured: Boolean(config.commandProxyUrl),
-    configured: isTeslaConfigured(env),
-    developerDomain: config.developerDomain || null,
-    enableOwnerApiShare: config.enableOwnerApiShare,
-    keyPairUrl: buildTeslaKeyPairUrl(env, vehicleVin),
-    lastError: connection?.lastError ?? null,
-    lastNavigation: connection?.lastNavigation ?? null,
-    lastSyncAt: connection?.lastSyncAt ?? null,
-    redirectUri: config.redirectUri,
-    selectedVehicle: connection?.selectedVehicle ?? null,
-    vehicleVin,
-  };
-}
-
-function appendTeslaCommandSetupHint(message, env = process.env) {
-  const config = getTeslaConfig(env);
-  if (config.commandProxyUrl) {
-    return message;
+  if (cachedEntry.expiresAt <= Date.now()) {
+    destinationSearchCache.delete(cacheKey);
+    return null;
   }
 
-  return `${message}. Tesla vehicle commands now usually require a registered virtual key plus TESLA_COMMAND_PROXY_URL.`;
+  return cachedEntry.payload;
 }
 
-function mergeTeslaVehicleData(baseTeslaState, vehicleData) {
-  if (!vehicleData) {
-    return baseTeslaState;
+function writeDestinationSearchCache(cacheKey, payload) {
+  destinationSearchCache.set(cacheKey, {
+    expiresAt: Date.now() + DESTINATION_SEARCH_CACHE_TTL_MS,
+    payload,
+  });
+
+  if (destinationSearchCache.size <= DESTINATION_SEARCH_CACHE_LIMIT) {
+    return;
   }
 
-  const nextState = structuredClone(baseTeslaState);
-  nextState.demo = false;
-  nextState.battery_level = parseNumber(vehicleData?.charge_state?.battery_level, nextState.battery_level);
-  nextState.battery_range = parseNumber(vehicleData?.charge_state?.battery_range, nextState.battery_range);
-  nextState.locked = Boolean(vehicleData?.vehicle_state?.locked ?? nextState.locked);
-  nextState.climate_state.inside_temp = parseNumber(
-    vehicleData?.climate_state?.inside_temp,
-    nextState.climate_state.inside_temp,
-  );
-  nextState.climate_state.outside_temp = parseNumber(
-    vehicleData?.climate_state?.outside_temp,
-    nextState.climate_state.outside_temp,
-  );
-  nextState.drive_state.speed = parseNumber(vehicleData?.drive_state?.speed, nextState.drive_state.speed);
-  nextState.vehicle_state = {
-    ...nextState.vehicle_state,
-    ...(vehicleData?.vehicle_state ?? {}),
-    locked: Boolean(vehicleData?.vehicle_state?.locked ?? nextState.locked),
-  };
-  return updateTeslaVehicleState(nextState);
+  const oldestKey = destinationSearchCache.keys().next().value;
+  if (oldestKey) {
+    destinationSearchCache.delete(oldestKey);
+  }
 }
 
-async function serveStaticAsset(requestPath, response) {
-  let decodedPath;
+function readRouteCache(cacheKey) {
+  const cachedEntry = routeCache.get(cacheKey);
+
+  if (!cachedEntry) {
+    return null;
+  }
+
+  if (cachedEntry.expiresAt <= Date.now()) {
+    routeCache.delete(cacheKey);
+    return null;
+  }
+
+  return cachedEntry.payload;
+}
+
+function writeRouteCache(cacheKey, payload) {
+  routeCache.set(cacheKey, {
+    expiresAt: Date.now() + ROUTE_CACHE_TTL_MS,
+    payload,
+  });
+
+  if (routeCache.size <= ROUTE_CACHE_LIMIT) {
+    return;
+  }
+
+  const oldestKey = routeCache.keys().next().value;
+  if (oldestKey) {
+    routeCache.delete(oldestKey);
+  }
+}
+
+async function fetchDestinationSearchResults(requestUrl) {
+  const query = requestUrl.searchParams.get("q")?.trim();
+
+  if (!query) {
+    return [];
+  }
+
+  const searchParams = new URLSearchParams({
+    addressdetails: "1",
+    countrycodes: "us",
+    dedupe: "1",
+    format: "jsonv2",
+    limit: String(clampInteger(requestUrl.searchParams.get("limit"), 10, 1, 25)),
+    namedetails: "1",
+    q: query,
+    viewbox: GEOFENCE_VIEWBOX,
+  });
+
+  if (requestUrl.searchParams.get("bounded") === "1") {
+    searchParams.set("bounded", "1");
+  }
+
+  const upstreamUrl = `${DESTINATION_SEARCH_URL}?${searchParams.toString()}`;
+  const cachedPayload = readDestinationSearchCache(upstreamUrl);
+  if (cachedPayload) {
+    return cachedPayload;
+  }
+
+  const response = await fetch(upstreamUrl, {
+    headers: {
+      Accept: "application/json",
+      "Accept-Language": "en-US,en;q=0.9",
+      "User-Agent": "RPI Taxi/1.0 (local destination search proxy)",
+    },
+    signal: AbortSignal.timeout(6500),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Destination search upstream failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const results = Array.isArray(payload) ? payload : [];
+  writeDestinationSearchCache(upstreamUrl, results);
+  return results;
+}
+
+async function handleDestinationSearch(requestUrl, response) {
   try {
-    decodedPath = decodeURIComponent(requestPath);
+    const payload = await fetchDestinationSearchResults(requestUrl);
+    serve(response, 200, JSON.stringify(payload), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
   } catch {
-    json(response, 400, { error: "Invalid asset path" });
-    return true;
+    serve(response, 502, JSON.stringify({ error: "destination_search_unavailable" }), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  }
+}
+
+async function fetchOsrmRoute(upstreamUrl, userAgent, timeoutMs = ROUTE_TIMEOUT_MS) {
+  const cachedPayload = readRouteCache(upstreamUrl);
+
+  if (cachedPayload) {
+    return cachedPayload;
   }
 
-  const relativePath = decodedPath === "/" ? "/index.html" : decodedPath;
-  const filePath = path.join(staticDir, relativePath);
-  const normalizedPath = path.normalize(filePath);
+  const upstreamResponse = await fetch(upstreamUrl, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": userAgent,
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
 
-  if (!normalizedPath.startsWith(staticDir)) {
-    json(response, 403, { error: "Forbidden" });
-    return true;
+  if (!upstreamResponse.ok) {
+    throw new Error(`Route upstream failed with status ${upstreamResponse.status}`);
+  }
+
+  const payload = await upstreamResponse.json();
+  writeRouteCache(upstreamUrl, payload);
+  return payload;
+}
+
+function getFastestRoute(payload) {
+  const routes = Array.isArray(payload?.routes) ? payload.routes : [];
+  return routes
+    .filter((route) => Number.isFinite(route?.duration))
+    .sort((left, right) => left.duration - right.duration)[0];
+}
+
+function decodeValhallaShape(shape) {
+  if (typeof shape !== "string" || shape.length === 0) {
+    return [];
+  }
+
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  const coordinates = [];
+
+  while (index < shape.length) {
+    let shift = 0;
+    let result = 0;
+    let byte = null;
+
+    do {
+      byte = shape.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < shape.length);
+
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    shift = 0;
+    result = 0;
+
+    do {
+      byte = shape.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20 && index < shape.length);
+
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coordinates.push([lng * 1e-6, lat * 1e-6]);
+  }
+
+  return coordinates;
+}
+
+async function fetchValhallaDriveRoute({ pickupLat, pickupLng, dropoffLat, dropoffLng }) {
+  const cacheKey = `valhalla:auto:${pickupLat},${pickupLng};${dropoffLat},${dropoffLng}`;
+  const cachedPayload = readRouteCache(cacheKey);
+
+  if (cachedPayload) {
+    return cachedPayload;
+  }
+
+  const requestBody = {
+    costing: "auto",
+    directions_options: {
+      units: "kilometers",
+    },
+    locations: [
+      {
+        lat: pickupLat,
+        lon: pickupLng,
+        type: "break",
+      },
+      {
+        lat: dropoffLat,
+        lon: dropoffLng,
+        type: "break",
+      },
+    ],
+  };
+  const response = await fetch(VALHALLA_ROUTE_URL, {
+    body: JSON.stringify(requestBody),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "RPI Taxi/1.0 (local Valhalla route proxy)",
+    },
+    method: "POST",
+    signal: AbortSignal.timeout(VALHALLA_ROUTE_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Valhalla route upstream failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const shape = payload?.trip?.legs?.[0]?.shape;
+  const coordinates = decodeValhallaShape(shape);
+
+  if (coordinates.length < 2) {
+    throw new Error("Valhalla route geometry unavailable");
+  }
+
+  const firstCoordinate = coordinates[0];
+  const lastCoordinate = coordinates[coordinates.length - 1];
+  const result = {
+    distance: Number(payload?.trip?.summary?.length) * 1000,
+    duration: payload?.trip?.summary?.time,
+    geometry: {
+      coordinates,
+      type: "LineString",
+    },
+    waypoints: [
+      {
+        distance: 0,
+        location: firstCoordinate,
+      },
+      {
+        distance: 0,
+        location: lastCoordinate,
+      },
+    ],
+  };
+
+  writeRouteCache(cacheKey, result);
+  return result;
+}
+
+async function fetchOsrmDriveRoute(upstreamUrl) {
+  const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local ride route proxy)");
+  const fastestRoute = getFastestRoute(payload);
+
+  if (!fastestRoute?.geometry?.coordinates?.length) {
+    throw new Error("No drive route available");
+  }
+
+  return {
+    distance: fastestRoute.distance,
+    duration: fastestRoute.duration,
+    geometry: fastestRoute.geometry,
+    waypoints: Array.isArray(payload?.waypoints) ? payload.waypoints : [],
+  };
+}
+
+async function fetchWalkRoute(origin, pickupWaypoint) {
+  const snappedLocation = pickupWaypoint?.location;
+
+  if (!Array.isArray(snappedLocation) || snappedLocation.length < 2) {
+    return null;
+  }
+
+  const [snappedLng, snappedLat] = snappedLocation;
+  if (!Number.isFinite(snappedLat) || !Number.isFinite(snappedLng)) {
+    return null;
+  }
+
+  const coordinates = `${origin.lng},${origin.lat};${snappedLng},${snappedLat}`;
+  const searchParams = new URLSearchParams({
+    alternatives: "false",
+    geometries: "geojson",
+    overview: "full",
+    steps: "false",
+  });
+  const upstreamUrl = `${WALK_ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
+  const walkResultCacheKey = `walk-result:${upstreamUrl}`;
+  const cachedWalkResult = readRouteCache(walkResultCacheKey);
+
+  if (cachedWalkResult) {
+    return cachedWalkResult;
+  }
+
+  const fallbackDistance = Number.isFinite(pickupWaypoint.distance) ? pickupWaypoint.distance : 0;
+  const fallbackWalkRoute = {
+    distance: fallbackDistance,
+    duration: fallbackDistance / WALK_FALLBACK_METERS_PER_SECOND,
+    geometry: {
+      coordinates: [
+        [origin.lng, origin.lat],
+        [snappedLng, snappedLat],
+      ],
+      type: "LineString",
+    },
+  };
+
+  try {
+    const payload = await fetchOsrmRoute(upstreamUrl, "RPI Taxi/1.0 (local walk route proxy)", WALK_ROUTE_TIMEOUT_MS);
+    const fastestRoute = getFastestRoute(payload);
+
+    if (!fastestRoute?.geometry?.coordinates?.length) {
+      writeRouteCache(walkResultCacheKey, fallbackWalkRoute);
+      return fallbackWalkRoute;
+    }
+
+    const walkRoute = {
+      distance: fastestRoute.distance,
+      duration: fastestRoute.duration,
+      geometry: fastestRoute.geometry,
+    };
+
+    writeRouteCache(walkResultCacheKey, walkRoute);
+    return walkRoute;
+  } catch {
+    writeRouteCache(walkResultCacheKey, fallbackWalkRoute);
+    return fallbackWalkRoute;
+  }
+}
+
+async function fetchRideRoute(requestUrl) {
+  const pickupLat = parseCoordinate(requestUrl.searchParams.get("pickupLat"));
+  const pickupLng = parseCoordinate(requestUrl.searchParams.get("pickupLng"));
+  const dropoffLat = parseCoordinate(requestUrl.searchParams.get("dropoffLat"));
+  const dropoffLng = parseCoordinate(requestUrl.searchParams.get("dropoffLng"));
+
+  if (
+    pickupLat === null ||
+    pickupLng === null ||
+    dropoffLat === null ||
+    dropoffLng === null ||
+    Math.abs(pickupLat) > 90 ||
+    Math.abs(dropoffLat) > 90 ||
+    Math.abs(pickupLng) > 180 ||
+    Math.abs(dropoffLng) > 180
+  ) {
+    throw new Error("Invalid route coordinates");
+  }
+
+  const coordinates = `${pickupLng},${pickupLat};${dropoffLng},${dropoffLat}`;
+  const searchParams = new URLSearchParams({
+    alternatives: "false",
+    geometries: "geojson",
+    overview: "full",
+    steps: "false",
+  });
+  const upstreamUrl = `${ROUTE_URL}/${coordinates}?${searchParams.toString()}`;
+  let driveRoute;
+
+  try {
+    driveRoute = await fetchValhallaDriveRoute({ pickupLat, pickupLng, dropoffLat, dropoffLng });
+  } catch {
+    driveRoute = await fetchOsrmDriveRoute(upstreamUrl);
+  }
+
+  const waypoints = Array.isArray(driveRoute?.waypoints) ? driveRoute.waypoints : [];
+  const walk = await fetchWalkRoute({ lat: pickupLat, lng: pickupLng }, waypoints[0]);
+  const result = {
+    distance: driveRoute.distance,
+    duration: driveRoute.duration,
+    geometry: driveRoute.geometry,
+    walk,
+    waypoints,
+  };
+  return result;
+}
+
+async function handleRideRoute(requestUrl, response) {
+  try {
+    const payload = await fetchRideRoute(requestUrl);
+    serve(response, 200, JSON.stringify(payload), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  } catch {
+    serve(response, 502, JSON.stringify({ error: "ride_route_unavailable" }), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+  }
+}
+
+function resolveAssetPath(urlPathname) {
+  if (urlPathname === "/" || urlPathname === "") {
+    return path.join(appDir, "index.html");
+  }
+
+  if (urlPathname === "/health") {
+    return null;
+  }
+
+  if (urlPathname.startsWith("/fonts/")) {
+    const candidate = path.resolve(projectRoot, `.${urlPathname}`);
+    return isSafePath(fontsDir, candidate) ? candidate : null;
+  }
+
+  const candidate = path.resolve(appDir, `.${urlPathname}`);
+  return isSafePath(appDir, candidate) ? candidate : null;
+}
+
+async function requestHandler(request, response) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const pathname = decodeURIComponent(requestUrl.pathname);
+
+  if (pathname === "/health") {
+    serve(response, 200, JSON.stringify({ ok: true }), {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    return;
+  }
+
+  if (pathname === "/api/destination-search") {
+    await handleDestinationSearch(requestUrl, response);
+    return;
+  }
+
+  if (pathname === "/api/ride-route") {
+    await handleRideRoute(requestUrl, response);
+    return;
+  }
+
+  let filePath = resolveAssetPath(pathname);
+  if (!filePath) {
+    serve(response, 404, "Not found", {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    return;
   }
 
   try {
-    await access(normalizedPath);
-    const extension = path.extname(normalizedPath);
-    const baseName = path.basename(normalizedPath);
-    const isFingerprintedAsset =
-      normalizedPath.startsWith(path.join(staticDir, "assets")) && /^index-[\w-]+\.(css|js)$/u.test(baseName);
+    let body = await tryRead(filePath);
+    const extension = path.extname(filePath).toLowerCase();
     const contentType = contentTypes[extension] ?? "application/octet-stream";
-    const payload = await readFile(normalizedPath);
-    response.writeHead(200, {
-      "Cache-Control":
-        extension === ".html" || !isFingerprintedAsset ? "no-store" : "public, max-age=31536000, immutable",
+    const cacheControl = "no-store";
+
+    serve(response, 200, body, {
+      "Cache-Control": cacheControl,
       "Content-Type": contentType,
+      "Permissions-Policy": "geolocation=(self)",
     });
-    response.end(payload);
-    return true;
   } catch {
-    if (!path.extname(requestPath)) {
-      const fallback = await readFile(path.join(staticDir, "index.html"));
-      response.writeHead(200, {
-        "Cache-Control": "no-store",
-        "Content-Type": "text/html; charset=utf-8",
-      });
-      response.end(fallback);
-      return true;
+    if (!path.extname(pathname)) {
+      filePath = path.join(appDir, "index.html");
+      try {
+        const body = await tryRead(filePath);
+        serve(response, 200, body, {
+          "Cache-Control": "no-store",
+          "Content-Type": contentTypes[".html"],
+          "Permissions-Policy": "geolocation=(self)",
+        });
+        return;
+      } catch {
+        // Fall through to 404 below.
+      }
     }
 
-    return false;
+    serve(response, 404, "Not found", {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    });
   }
 }
 
-async function persistTeslaConnection(store, partialConnection) {
-  await store.update((state) => {
-    state.tesla.connection = {
-      ...state.tesla.connection,
-      ...partialConnection,
-    };
-    return state;
-  });
-}
-
-async function attemptTeslaDestinationPush({ env, label, lat, lng, store }) {
-  const state = store.getState();
-  if (!state.tesla.connection?.tokens?.accessToken) {
-    return {
-      attempted: false,
-      reason: "tesla_not_connected",
-    };
-  }
-
-  try {
-    const textPayload = buildTeslaShareText({ address: label, label, lat, lng });
-    const { payload, tokens } = await sendTeslaOwnerApiShare({
-      connectionState: state.tesla.connection,
-      env,
-      text: textPayload,
-    });
-
-    const lastNavigation = {
-      label,
-      lat,
-      lng,
-      pushedAt: new Date().toISOString(),
-      result: payload,
-      textPayload,
-    };
-
-    await persistTeslaConnection(store, {
-      authorized: true,
-      lastError: null,
-      lastNavigation,
-      lastSyncAt: new Date().toISOString(),
-      tokens,
-    });
-
-    return {
-      attempted: true,
-      result: payload,
-      success: true,
-    };
-  } catch (error) {
-    const message = appendTeslaCommandSetupHint(
-      error instanceof Error ? error.message : "Tesla navigation push failed",
-      env,
-    );
-    await persistTeslaConnection(store, {
-      lastError: message,
-      lastSyncAt: new Date().toISOString(),
-    });
-    return {
-      attempted: true,
-      error: message,
-      success: false,
-    };
-  }
-}
-
-async function attemptRideNavigation(store, ride, phase, env = process.env) {
-  if (phase === "pickup") {
-    return attemptTeslaDestinationPush({
-      env,
-      label: ride.pickupAddress,
-      lat: ride.pickupLat,
-      lng: ride.pickupLng,
-      store,
-    });
-  }
-
-  return attemptTeslaDestinationPush({
-    env,
-    label: ride.destAddress,
-    lat: ride.destLat,
-    lng: ride.destLng,
-    store,
-  });
-}
-
-export async function createAppServer(options = {}) {
-  const env = options.env ?? process.env;
-  const store = await new JsonStateStore(options.stateFile ?? stateFile).init();
-
-  const server = createServer(async (request, response) => {
-    const requestUrl = new URL(request.url ?? "/", "http://localhost");
-    const { pathname, searchParams } = requestUrl;
-
-    try {
-      if (request.method === "GET" && pathname === "/api/health") {
-        json(response, 200, { ok: true });
-        return;
-      }
-
-      if (request.method === "POST" && pathname === "/api/auth/request-code") {
-        const body = await readJsonBody(request);
-        const email = normalizeEmail(body?.email);
-
-        if (!isAllowedRpiEmail(email, env)) {
-          json(response, 400, { error: "Only @rpi.edu email addresses can create RPI Taxi accounts." });
-          return;
-        }
-
-        const code = createVerificationCode();
-        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-
-        await store.update((state) => {
-          state.auth.verificationCodes = state.auth.verificationCodes.filter((entry) => entry.email !== email);
-          state.auth.verificationCodes.push({
-            code,
-            createdAt: new Date().toISOString(),
-            email,
-            expiresAt,
-          });
-          return state;
-        });
-
-        const delivery = await deliverVerificationCode({
-          code,
-          email,
-          outboxDir: options.outboxDir ?? outboxDir,
-        });
-
-        json(response, 200, {
-          delivery,
-          ok: true,
-          requiresCode: true,
-        });
-        return;
-      }
-
-      if (request.method === "POST" && pathname === "/api/auth/verify-code") {
-        const body = await readJsonBody(request);
-        const email = normalizeEmail(body?.email);
-        const code = String(body?.code ?? "").trim();
-
-        if (!isAllowedRpiEmail(email, env)) {
-          json(response, 400, { error: "Only @rpi.edu email addresses can create RPI Taxi accounts." });
-          return;
-        }
-
-        const now = Date.now();
-        const state = store.getState();
-        const verificationRecord = state.auth.verificationCodes.find((entry) => entry.email === email && entry.code === code);
-        if (!verificationRecord || Date.parse(verificationRecord.expiresAt) < now) {
-          json(response, 401, { error: "Verification code is invalid or expired." });
-          return;
-        }
-
-        const userId = state.auth.users.find((entry) => entry.email === email)?.id ?? randomUUID();
-        const sessionId = randomUUID();
-        const createdAt = new Date().toISOString();
-        let nextUser = null;
-
-        await store.update((draft) => {
-          draft.auth.verificationCodes = draft.auth.verificationCodes.filter((entry) => {
-            return !(entry.email === email && entry.code === code);
-          });
-
-          const existingUser = draft.auth.users.find((entry) => entry.id === userId);
-          nextUser = {
-            createdAt: existingUser?.createdAt ?? createdAt,
-            displayName: sanitizeDisplayName(email, body?.displayName ?? existingUser?.displayName),
-            email,
-            id: userId,
-            verifiedAt: createdAt,
-          };
-
-          draft.auth.users = draft.auth.users.filter((entry) => entry.id !== userId);
-          draft.auth.users.push(nextUser);
-          draft.auth.sessions.push({
-            createdAt,
-            id: sessionId,
-            lastSeenAt: createdAt,
-            userId,
-          });
-          return draft;
-        });
-
-        const sessionCookie = createSessionCookie(sessionId, {
-          maxAge: 60 * 60 * 24 * 14,
-          name: env.SESSION_COOKIE_NAME || "rpi_taxi_session",
-        });
-
-        json(
-          response,
-          200,
-          {
-            ok: true,
-            user: sanitizeUser(nextUser),
-          },
-          {
-            "Set-Cookie": sessionCookie,
-          },
-        );
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/auth/session") {
-        const state = store.getState();
-        const { user } = getSessionContext(request, state, env);
-        if (!user) {
-          json(response, 200, {
-            authenticated: false,
-            tesla: sanitizeTeslaConnection(state.tesla.connection, env),
-            user: null,
-          });
-          return;
-        }
-
-        json(response, 200, {
-          authenticated: true,
-          rides: sortRides(state.rides.filter((ride) => ride.userId === user.id)),
-          tesla: sanitizeTeslaConnection(state.tesla.connection, env),
-          user: sanitizeUser(user),
-        });
-        return;
-      }
-
-      if (request.method === "POST" && pathname === "/api/auth/logout") {
-        const state = store.getState();
-        const { session } = getSessionContext(request, state, env);
-        if (session) {
-          await store.update((draft) => {
-            draft.auth.sessions = draft.auth.sessions.filter((entry) => entry.id !== session.id);
-            return draft;
-          });
-        }
-
-        json(
-          response,
-          200,
-          { ok: true },
-          {
-            "Set-Cookie": createSessionCookie("", {
-              expires: new Date(0),
-              maxAge: 0,
-              name: env.SESSION_COOKIE_NAME || "rpi_taxi_session",
-            }),
-          },
-        );
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/users/me/rides") {
-        const state = store.getState();
-        const { user } = getSessionContext(request, state, env);
-        if (!user) {
-          json(response, 401, { error: "Not signed in" });
-          return;
-        }
-
-        json(response, 200, sortRides(state.rides.filter((ride) => ride.userId === user.id)));
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/rides") {
-        json(response, 200, sortRides(store.getState().rides));
-        return;
-      }
-
-      if (request.method === "POST" && pathname === "/api/rides") {
-        const body = await readJsonBody(request);
-        const { user } = getSessionContext(request, store.getState(), env);
-        const now = new Date().toISOString();
-        const ride = {
-          id: randomUUID(),
-          status: String(body?.status ?? "pending"),
-          createdAt: now,
-          navigation: null,
-          riderEmail: user?.email ?? null,
-          updatedAt: now,
-          userId: user?.id ?? null,
-          ...parseRidePayload(body),
-        };
-
-        await store.update((state) => {
-          state.rides.unshift(ride);
-          return state;
-        });
-
-        const navigation = await attemptRideNavigation(store, ride, "pickup", env);
-        if (navigation.attempted) {
-          await store.update((state) => {
-            state.rides = state.rides.map((entry) => {
-              return entry.id === ride.id
-                ? {
-                    ...entry,
-                    navigation: {
-                      ...(entry.navigation ?? {}),
-                      pickup: navigation,
-                    },
-                  }
-                : entry;
-            });
-            return state;
-          });
-          ride.navigation = {
-            pickup: navigation,
-          };
-        }
-
-        json(response, 201, ride);
-        return;
-      }
-
-      if (request.method === "PATCH" && pathname.startsWith("/api/rides/")) {
-        const rideId = pathname.slice("/api/rides/".length);
-        const body = await readJsonBody(request);
-        let updatedRide = null;
-        let enteredRide = false;
-
-        await store.update((state) => {
-          state.rides = state.rides.map((ride) => {
-            if (ride.id !== rideId) {
-              return ride;
-            }
-
-            enteredRide = body?.status === "in_ride" && ride.status !== "in_ride";
-            updatedRide = {
-              ...ride,
-              ...body,
-              updatedAt: new Date().toISOString(),
-            };
-            return updatedRide;
-          });
-          return state;
-        });
-
-        if (!updatedRide) {
-          json(response, 404, { error: "Ride not found" });
-          return;
-        }
-
-        if (enteredRide) {
-          const navigation = await attemptRideNavigation(store, updatedRide, "destination", env);
-          if (navigation.attempted) {
-            await store.update((state) => {
-              state.rides = state.rides.map((ride) => {
-                return ride.id === updatedRide.id
-                  ? {
-                      ...ride,
-                      navigation: {
-                        ...(ride.navigation ?? {}),
-                        destination: navigation,
-                      },
-                    }
-                  : ride;
-              });
-              return state;
-            });
-            updatedRide.navigation = {
-              ...(updatedRide.navigation ?? {}),
-              destination: navigation,
-            };
-          }
-        }
-
-        json(response, 200, updatedRide);
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/tesla/oauth/status") {
-        const connection = store.getState().tesla.connection;
-        json(response, 200, sanitizeTeslaConnection(connection, env));
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/auth/tesla/start") {
-        if (!isTeslaConfigured(env)) {
-          text(response, 400, "Tesla OAuth is not configured. Set TESLA_CLIENT_ID, TESLA_CLIENT_SECRET, and TESLA_REDIRECT_URI.");
-          return;
-        }
-
-        const { session } = getSessionContext(request, store.getState(), env);
-        const oauthState = createTeslaOauthState(session?.id ?? null);
-        await store.update((state) => {
-          state.tesla.connection.oauthStates = state.tesla.connection.oauthStates.filter((entry) => {
-            return Date.parse(entry.createdAt) > Date.now() - 15 * 60_000;
-          });
-          state.tesla.connection.oauthStates.push(oauthState);
-          return state;
-        });
-
-        response.writeHead(302, {
-          Location: buildTeslaAuthorizeUrl(env, oauthState),
-        });
-        response.end();
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/auth/tesla/callback") {
-        const code = searchParams.get("code");
-        const stateId = searchParams.get("state");
-        if (!code || !stateId) {
-          text(response, 400, "Missing Tesla OAuth callback parameters.");
-          return;
-        }
-
-        const state = store.getState();
-        const oauthState = state.tesla.connection.oauthStates.find((entry) => entry.id === stateId);
-        if (!oauthState) {
-          text(response, 400, "Tesla OAuth state is invalid or expired.");
-          return;
-        }
-
-        try {
-          const tokens = await exchangeTeslaCodeForTokens({ code, env });
-          const vehiclesResult = await fetchTeslaVehicles({
-            connectionState: {
-              ...state.tesla.connection,
-              tokens,
-            },
-            env,
-          });
-          const selectedVehicle =
-            vehiclesResult.vehicles.find((vehicle) => vehicle.vin === (env.TESLA_VIN || "")) ??
-            vehiclesResult.vehicles[0] ??
-            null;
-
-          await store.update((draft) => {
-            draft.tesla.connection = {
-              ...draft.tesla.connection,
-              authorized: true,
-              authorizedAt: new Date().toISOString(),
-              lastError: null,
-              lastSyncAt: new Date().toISOString(),
-              oauthStates: draft.tesla.connection.oauthStates.filter((entry) => entry.id !== stateId),
-              selectedVehicle,
-              tokens: vehiclesResult.tokens,
-            };
-            return draft;
-          });
-
-          response.writeHead(302, {
-            Location: "/#/ride?tesla=connected",
-          });
-          response.end();
-          return;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Tesla connection failed";
-          await persistTeslaConnection(store, {
-            lastError: message,
-            oauthStates: store
-              .getState()
-              .tesla.connection.oauthStates.filter((entry) => entry.id !== stateId),
-          });
-          text(response, 500, message);
-          return;
-        }
-      }
-
-      if (request.method === "GET" && pathname === "/api/tesla/status") {
-        const state = store.getState();
-        const activeRide = state.rides.find((ride) => ride.status === "in_ride");
-        const queuedRide = state.rides.find((ride) => ["pending", "driver_accepted", "arrived"].includes(ride.status));
-        let tesla = structuredClone(state.tesla);
-        tesla.drive_state.speed = activeRide ? 28 : queuedRide ? 9 : 0;
-        tesla.battery_level = Math.max(40, tesla.battery_level - Math.min(state.rides.length, 8));
-        tesla.battery_range = Math.max(120, tesla.battery_range - Math.min(state.rides.length * 2, 20));
-
-        if (state.tesla.connection?.tokens?.accessToken) {
-          try {
-            const { tokens, vehicleData } = await fetchTeslaVehicleData({
-              connectionState: state.tesla.connection,
-              env,
-            });
-            tesla = mergeTeslaVehicleData(tesla, vehicleData);
-            await persistTeslaConnection(store, {
-              lastError: null,
-              lastSyncAt: new Date().toISOString(),
-              tokens,
-              vehicleData,
-            });
-          } catch (error) {
-            await persistTeslaConnection(store, {
-              lastError: error instanceof Error ? error.message : "Unable to fetch Tesla vehicle data",
-              lastSyncAt: new Date().toISOString(),
-            });
-          }
-        } else {
-          tesla = updateTeslaVehicleState(tesla);
-        }
-
-        tesla.connection = sanitizeTeslaConnection(store.getState().tesla.connection, env);
-        json(response, 200, tesla);
-        return;
-      }
-
-      if (request.method === "POST" && pathname === "/api/tesla/navigation") {
-        const body = await readJsonBody(request);
-        const label = String(body?.label ?? body?.address ?? "Pickup destination").trim();
-        const lat = parseNumber(body?.lat, NaN);
-        const lng = parseNumber(body?.lng, NaN);
-        const navigation = await attemptTeslaDestinationPush({
-          env,
-          label,
-          lat,
-          lng,
-          store,
-        });
-
-        json(response, navigation.success === false ? 502 : 200, navigation);
-        return;
-      }
-
-      if (request.method === "POST" && pathname.startsWith("/api/tesla/")) {
-        const command = pathname.slice("/api/tesla/".length);
-        const body = await readJsonBody(request);
-        let payload = null;
-
-        await store.update((state) => {
-          const tesla = state.tesla;
-          const connection = state.tesla.connection;
-
-          switch (command) {
-            case "flash-lights":
-              tesla.lightsFlashed = true;
-              tesla.lastFlashAt = new Date().toISOString();
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            case "honk-horn":
-              tesla.lastHornAt = new Date().toISOString();
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            case "unlock":
-              tesla.locked = false;
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            case "lock":
-              tesla.locked = true;
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            case "trunk":
-              if (body?.which === "front") {
-                tesla.frunkOpen = !tesla.frunkOpen;
-              } else {
-                tesla.trunkOpen = !tesla.trunkOpen;
-              }
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            case "climate":
-              tesla.climate_state.inside_temp = parseNumber(body?.temp, tesla.climate_state.inside_temp);
-              payload = { ok: true, result: true, command, state: updateTeslaVehicleState(tesla) };
-              break;
-            default:
-              payload = { ok: false, error: "Unknown Tesla command" };
-          }
-
-          payload.connection = sanitizeTeslaConnection(connection, env);
-          return state;
-        });
-
-        const remoteCommandMap = {
-          climate: {
-            body: {
-              driver_temp: parseNumber(body?.temp, 21),
-              passenger_temp: parseNumber(body?.temp, 21),
-            },
-            path: "set_temps",
-          },
-          "flash-lights": { path: "flash_lights" },
-          "honk-horn": { path: "honk_horn" },
-          lock: { path: "door_lock" },
-          trunk: {
-            body: {
-              which_trunk: body?.which === "front" ? "front" : "rear",
-            },
-            path: "actuate_trunk",
-          },
-          unlock: { path: "door_unlock" },
-        };
-
-        if (payload?.ok && remoteCommandMap[command] && store.getState().tesla.connection?.tokens?.accessToken) {
-          try {
-            const { payload: remotePayload, tokens } = await sendTeslaCommand({
-              body: remoteCommandMap[command].body,
-              commandPath: remoteCommandMap[command].path,
-              connectionState: store.getState().tesla.connection,
-              env,
-            });
-            await persistTeslaConnection(store, {
-              lastError: null,
-              lastSyncAt: new Date().toISOString(),
-              tokens,
-            });
-            payload.remote = {
-              attempted: true,
-              payload: remotePayload,
-              success: true,
-            };
-          } catch (error) {
-            const message = appendTeslaCommandSetupHint(error instanceof Error ? error.message : "Tesla command failed", env);
-            await persistTeslaConnection(store, {
-              lastError: message,
-              lastSyncAt: new Date().toISOString(),
-            });
-            payload.remote = {
-              attempted: true,
-              error: message,
-              success: false,
-            };
-          }
-        }
-
-        json(response, payload?.ok === false ? 404 : 200, payload);
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/geocode/search") {
-        const query = searchParams.get("q") ?? "";
-        const results = await geocodeSearch(query);
-        json(response, 200, results);
-        return;
-      }
-
-      if (request.method === "GET" && pathname === "/api/route") {
-        const fromLng = parseNumber(searchParams.get("fromLng"), -73.6779);
-        const fromLat = parseNumber(searchParams.get("fromLat"), 42.7296);
-        const toLng = parseNumber(searchParams.get("toLng"), -73.6886);
-        const toLat = parseNumber(searchParams.get("toLat"), 42.7262);
-        const route = await calculateRoute(fromLng, fromLat, toLng, toLat);
-        json(response, 200, route);
-        return;
-      }
-
-      const served = await serveStaticAsset(pathname, response);
-      if (!served) {
-        json(response, 404, { error: "Not found" });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unexpected error";
-      json(response, 500, {
-        error: message,
-      });
-    }
+export { requestHandler };
+
+export function startServer(options = {}) {
+  const host = options.host ?? process.env.HOST ?? "127.0.0.1";
+  const port = Number(options.port ?? process.env.PORT ?? 5000);
+  const server = createServer(requestHandler);
+
+  server.listen(port, host, () => {
+    console.log(`RPI Taxi running at http://${host}:${port}`);
   });
 
   return server;
 }
 
-async function start() {
-  const port = Number(process.env.PORT ?? 5000);
-  const host = process.env.HOST ?? "127.0.0.1";
-  const server = await createAppServer();
-
-  server.listen(port, host, () => {
-    console.log(`RPI Taxi running at http://${host}:${port}`);
-  });
-}
-
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMainModule) {
-  start();
+  startServer();
 }

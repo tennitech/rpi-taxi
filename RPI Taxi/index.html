@@ -2,16 +2,47 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>RPI Taxi — Campus Autonomous Rides</title>
-    <meta name="description" content="RPI Taxi — student-run autonomous ride service at Rensselaer Polytechnic Institute" />
-    <link rel="icon" type="image/png" href="./favicon.png" />
-    <meta name="theme-color" content="#d6001c" />
-    <script src="./app-bridge.js"></script>
-    <script type="module" crossorigin src="./assets/index-POP2QhxT.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-LFk1VK-l.css">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5, user-scalable=yes"
+    />
+    <title>RPI Taxi</title>
+    <meta name="description" content="Mobile-first Tesla-style campus ride-hailing prototype." />
+    <meta name="theme-color" content="#030303" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="RPI Taxi" />
+    <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+      }
+
+      if ("caches" in window) {
+        caches.keys().then((keys) => {
+          keys.forEach((key) => caches.delete(key));
+        });
+      }
+    </script>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css?v=20260425l" />
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      crossorigin=""
+    ></script>
+    <script type="module" src="./main.js?v=20260425l"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="app"></div>
   </body>
 </html>
