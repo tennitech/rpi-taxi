@@ -456,13 +456,13 @@ robotaxi-map,
 }
 
 .map-screen[data-theme="dark"] .leaflet-dark-base-pane {
-  filter: saturate(0) brightness(1.72) contrast(1.18) blur(0.42px);
+  filter: grayscale(1) brightness(2.18) contrast(0.96) blur(0.18px);
   opacity: 1;
 }
 
 .map-screen[data-theme="dark"] .leaflet-dark-labels-pane {
-  filter: saturate(0) brightness(1.9) contrast(0.9);
-  opacity: 0.82;
+  filter: grayscale(1) brightness(2.3) contrast(0.84);
+  opacity: 0.76;
 }
 
 .map-screen[data-theme="light"] .leaflet-container {
@@ -492,6 +492,7 @@ robotaxi-map,
 }
 
 .leaflet-geofence-mask-pane,
+.leaflet-geofence-halo-pane,
 .leaflet-geofence-border-pane,
 .leaflet-destination-pane,
 .leaflet-ride-approach-pane,

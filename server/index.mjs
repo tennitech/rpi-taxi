@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GEOFENCE_COORDS } from "../RPI Taxi/geofence.js";
+import { SERVICE_AREA_COORDS } from "../RPI Taxi/geofence.js";
 
 const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const appDir = path.join(projectRoot, "RPI Taxi");
@@ -20,7 +20,7 @@ const ROUTE_URL = `${ROUTE_BASE_URL}/driving`;
 const WALK_ROUTE_URL = `${ROUTE_BASE_URL}/foot`;
 const VALHALLA_ROUTE_URL = "https://valhalla1.openstreetmap.de/route";
 const WALK_FALLBACK_METERS_PER_SECOND = 1.35;
-const GEOFENCE_VIEWBOX = createGeofenceViewbox(GEOFENCE_COORDS);
+const GEOFENCE_VIEWBOX = createGeofenceViewbox(SERVICE_AREA_COORDS.flat());
 const destinationSearchCache = new Map();
 const routeCache = new Map();
 
@@ -558,6 +558,7 @@ async function requestHandler(request, response) {
     serve(response, 200, body, {
       "Cache-Control": cacheControl,
       "Content-Type": contentType,
+      "Permissions-Policy": "geolocation=(self)",
     });
   } catch {
     if (!path.extname(pathname)) {
@@ -567,6 +568,7 @@ async function requestHandler(request, response) {
         serve(response, 200, body, {
           "Cache-Control": "no-store",
           "Content-Type": contentTypes[".html"],
+          "Permissions-Policy": "geolocation=(self)",
         });
         return;
       } catch {

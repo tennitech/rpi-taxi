@@ -1,25 +1,33 @@
-import { GEOFENCE_COORDS } from "./geofence.js";
+import { GEOFENCE_COORDS, SERVICE_AREA_COORDS } from "./geofence.js";
 
 const GEOFENCE_OUTER_RING = [
-  [42.81, -73.79],
-  [42.81, -73.57],
-  [42.64, -73.57],
-  [42.64, -73.79],
+  [85, -180],
+  [85, 180],
+  [-85, 180],
+  [-85, -180],
 ];
 
 const GEOFENCE_THEME_STYLES = {
   dark: {
     border: {
-      color: "#aeb7c4",
+      color: "#d5d8dd",
+      fillColor: "#d8dbe0",
+      fillOpacity: 0.055,
+      opacity: 0.86,
+      smoothFactor: 1,
+      weight: 3.25,
+    },
+    halo: {
+      color: "#0b0d10",
       fill: false,
       opacity: 0.72,
-      smoothFactor: 1.1,
-      weight: 3,
+      smoothFactor: 1,
+      weight: 7.5,
     },
     mask: {
       color: "transparent",
-      fillColor: "#03060b",
-      fillOpacity: 0.5,
+      fillColor: "#020304",
+      fillOpacity: 0.68,
       interactive: false,
       smoothFactor: 1.1,
       stroke: false,
@@ -32,6 +40,13 @@ const GEOFENCE_THEME_STYLES = {
       opacity: 0.86,
       smoothFactor: 1.1,
       weight: 3,
+    },
+    halo: {
+      color: "#5d6168",
+      fill: false,
+      opacity: 0.5,
+      smoothFactor: 1,
+      weight: 7,
     },
     mask: {
       color: "transparent",
@@ -47,6 +62,11 @@ const GEOFENCE_THEME_STYLES = {
 const LOCATION_PREFERENCE_KEY = "rpi_taxi_location_permission";
 const LOCATION_PREFERENCE_GRANTED = "granted";
 const LOCATION_PREFERENCE_DENIED = "denied";
+const PRECISE_GEOLOCATION_OPTIONS = {
+  enableHighAccuracy: true,
+  maximumAge: 0,
+  timeout: 30_000,
+};
 const CURATED_DESTINATION_CACHE_KEY = "rpi_taxi_curated_destinations_v1";
 
 const DESTINATION_SEARCH_DEBOUNCE_MS = 140;
@@ -99,6 +119,8 @@ const MOCK_VEHICLE_APPROACH_COLOR = "#3A6BE6";
 const MOCK_VEHICLE_APPROACH_BORDER_COLOR = "#064086";
 const MOCK_VEHICLE_ASSET_BEARING_OFFSET_DEGREES = -90;
 const GEOFENCE = createGeofenceProfile(GEOFENCE_COORDS);
+const SERVICE_AREAS = SERVICE_AREA_COORDS.map(createGeofenceProfile);
+const SERVICE_AREA_VIEWBOX = createGeofenceProfile(SERVICE_AREA_COORDS.flat()).viewbox;
 const DEFAULT_SEARCH_ORIGIN = GEOFENCE.centroid;
 
 const TILE_LAYERS = {
@@ -226,6 +248,62 @@ const CURATED_DESTINATIONS = [
     lookup: "760 Hoosick Rd, Troy, NY 12180",
     title: "Walmart Supercenter",
     subtitle: "760 Hoosick Rd, Troy, NY",
+  },
+  {
+    id: "bolton-landing",
+    lat: 43.55889,
+    lng: -73.65464,
+    lookup: "Bolton Landing, NY 12814",
+    title: "Bolton Landing",
+    subtitle: "Lake Shore Dr, Bolton Landing, NY",
+  },
+  {
+    id: "rogers-memorial-park",
+    lat: 43.5574,
+    lng: -73.6553,
+    lookup: "Rogers Memorial Park Road, Bolton Landing, NY 12814",
+    title: "Rogers Memorial Park",
+    subtitle: "Rogers Memorial Park Rd, Bolton Landing, NY",
+  },
+  {
+    id: "sagamore-resort",
+    lat: 43.5558,
+    lng: -73.6450,
+    lookup: "110 Sagamore Road, Bolton Landing, NY 12814",
+    title: "The Sagamore Resort",
+    subtitle: "110 Sagamore Rd, Bolton Landing, NY",
+  },
+  {
+    id: "up-yonda-farm",
+    lat: 43.5842,
+    lng: -73.6568,
+    lookup: "5239 Lake Shore Drive, Bolton Landing, NY 12814",
+    title: "Up Yonda Farm",
+    subtitle: "5239 Lake Shore Dr, Bolton Landing, NY",
+  },
+  {
+    id: "pinnacle-trailhead",
+    lat: 43.558139,
+    lng: -73.682167,
+    lookup: "The Pinnacle Trailhead, 139 Edgecomb Pond Road, Bolton Landing, NY 12814",
+    title: "The Pinnacle Trailhead",
+    subtitle: "Edgecomb Pond Rd, Bolton Landing, NY",
+  },
+  {
+    id: "federal-hill",
+    lat: 43.583678,
+    lng: -73.666787,
+    lookup: "Federal Hill, Bolton Landing, NY 12814",
+    title: "Federal Hill",
+    subtitle: "Bolton Landing, NY",
+  },
+  {
+    id: "amy-park",
+    lat: 43.603994,
+    lng: -73.692566,
+    lookup: "Amy's Park, Padanarum Road, Bolton Landing, NY 12814",
+    title: "Amy's Park",
+    subtitle: "Padanarum Rd, Bolton Landing, NY",
   },
 ];
 
@@ -413,14 +491,14 @@ const template = String.raw`
               </div>
             </article>
             <div class="ride-payment" aria-label="Payment method">
-              <span class="ride-payment__brand">DEMO</span>
-              <span class="ride-payment__number">•••• 1824</span>
+              <span class="ride-payment__brand">BETA</span>
+              <span class="ride-payment__number">•••• XXXX</span>
               <span class="ride-payment__chevron" aria-hidden="true"></span>
               <span class="ride-payment__spacer"></span>
               <span class="ride-payment__price">
-                <span class="ride-payment__badge">NEW</span>
+                <span class="ride-payment__badge">BETA</span>
                 <span class="ride-payment__price-value">$0.00</span>
-                <s>$19.56</s>
+                <s>$X.XX</s>
               </span>
             </div>
             <button class="ride-book-button" type="button" data-book-ride-button>
@@ -532,6 +610,7 @@ function buildSearchQueries(query) {
 
   if (!hasLocalityHint(query)) {
     appendQuery(`${query}, Troy, NY`);
+    appendQuery(`${query}, Bolton Landing, NY`);
 
     if (looksLikeAddressQuery(query)) {
       appendQuery(`${query}, Troy, NY 12180`);
@@ -545,7 +624,7 @@ function buildSearchQueries(query) {
 }
 
 function hasLocalityHint(query) {
-  return /\b(troy|rensselaer|rpi|new york|ny|12180)\b/iu.test(String(query ?? ""));
+  return /\b(troy|rensselaer|rpi|bolton|lake george|new york|ny|12180|12814)\b/iu.test(String(query ?? ""));
 }
 
 function looksLikeAddressQuery(query) {
@@ -1081,11 +1160,15 @@ class RobotaxiMap extends HTMLElement {
 
     const geofenceMaskPane = this.map.createPane("geofenceMaskPane");
     geofenceMaskPane.classList.add("leaflet-geofence-mask-pane");
-    geofenceMaskPane.style.zIndex = "430";
+    geofenceMaskPane.style.zIndex = "660";
+
+    const geofenceHaloPane = this.map.createPane("geofenceHaloPane");
+    geofenceHaloPane.classList.add("leaflet-geofence-halo-pane");
+    geofenceHaloPane.style.zIndex = "661";
 
     const geofenceBorderPane = this.map.createPane("geofenceBorderPane");
     geofenceBorderPane.classList.add("leaflet-geofence-border-pane");
-    geofenceBorderPane.style.zIndex = "620";
+    geofenceBorderPane.style.zIndex = "662";
 
     const lightLabelsPane = this.map.createPane("lightLabelsPane");
     lightLabelsPane.classList.add("leaflet-light-labels-pane");
@@ -1135,16 +1218,29 @@ class RobotaxiMap extends HTMLElement {
     const geofenceBounds = window.L.latLngBounds(GEOFENCE_COORDS);
     this.geofenceBounds = geofenceBounds;
 
-    this.geofenceMask = window.L.polygon([GEOFENCE_OUTER_RING, GEOFENCE_COORDS], {
+    this.geofenceMask = window.L.polygon([GEOFENCE_OUTER_RING, ...SERVICE_AREA_COORDS], {
       fillRule: "evenodd",
       pane: "geofenceMaskPane",
       ...GEOFENCE_THEME_STYLES.dark.mask,
     }).addTo(this.map);
 
-    this.geofenceBorder = window.L.polygon(GEOFENCE_COORDS, {
-      pane: "geofenceBorderPane",
-      ...GEOFENCE_THEME_STYLES.dark.border,
-    }).addTo(this.map);
+    this.geofenceHalo = window.L.featureGroup(
+      SERVICE_AREA_COORDS.map((coords) =>
+        window.L.polygon(coords, {
+          pane: "geofenceHaloPane",
+          ...GEOFENCE_THEME_STYLES.dark.halo,
+        }),
+      ),
+    ).addTo(this.map);
+
+    this.geofenceBorder = window.L.featureGroup(
+      SERVICE_AREA_COORDS.map((coords) =>
+        window.L.polygon(coords, {
+          pane: "geofenceBorderPane",
+          ...GEOFENCE_THEME_STYLES.dark.border,
+        }),
+      ),
+    ).addTo(this.map);
 
     this.activeTheme = null;
     this.applyTheme("dark");
@@ -2977,8 +3073,7 @@ class RobotaxiMap extends HTMLElement {
     }
 
     return Array.from({ length: visibleCount }, (_, index) => {
-      const itemIndex = (this.destinationRotationIndex + index) % curated.length;
-      return curated[itemIndex];
+      return curated[index];
     });
   }
 
@@ -3116,7 +3211,7 @@ class RobotaxiMap extends HTMLElement {
       q: query,
     });
 
-    searchParams.set("viewbox", GEOFENCE.viewbox);
+    searchParams.set("viewbox", SERVICE_AREA_VIEWBOX);
 
     if (bounded) {
       searchParams.set("bounded", "1");
@@ -4250,7 +4345,12 @@ class RobotaxiMap extends HTMLElement {
   }
 
   isWithinGeofence(lat, lng) {
-    return pointInPolygon(lat, lng, GEOFENCE.coords, GEOFENCE.bounds);
+    return this.getServiceAreaContaining(lat, lng) !== null;
+  }
+
+  getServiceAreaContaining(lat, lng) {
+    const areaIndex = SERVICE_AREAS.findIndex((area) => pointInPolygon(lat, lng, area.coords, area.bounds));
+    return areaIndex >= 0 ? areaIndex : null;
   }
 
   async resolveDestinationCoordinates(destination) {
@@ -4372,12 +4472,8 @@ class RobotaxiMap extends HTMLElement {
     }
 
     this.locationTrackingReady = true;
-    const storedPreference = this.getStoredLocationPreference();
-
     if (!navigator.permissions?.query) {
-      if (storedPreference !== LOCATION_PREFERENCE_DENIED) {
-        this.startLocationWatch();
-      }
+      this.startLocationWatch();
       return;
     }
 
@@ -4385,22 +4481,20 @@ class RobotaxiMap extends HTMLElement {
       .query({ name: "geolocation" })
       .then((status) => {
         this.locationPermissionStatus = status;
-        this.handleLocationPermissionState(status.state, storedPreference);
+        this.handleLocationPermissionState(status.state);
 
         this.handleLocationPermissionChange = () => {
-          this.handleLocationPermissionState(status.state, this.getStoredLocationPreference());
+          this.handleLocationPermissionState(status.state);
         };
 
         status.addEventListener?.("change", this.handleLocationPermissionChange);
       })
       .catch(() => {
-        if (storedPreference !== LOCATION_PREFERENCE_DENIED) {
-          this.startLocationWatch();
-        }
+        this.startLocationWatch();
       });
   }
 
-  handleLocationPermissionState(state, storedPreference) {
+  handleLocationPermissionState(state) {
     if (state === "granted") {
       this.setStoredLocationPreference(LOCATION_PREFERENCE_GRANTED);
       this.startLocationWatch();
@@ -4413,9 +4507,7 @@ class RobotaxiMap extends HTMLElement {
       return;
     }
 
-    if (storedPreference !== LOCATION_PREFERENCE_DENIED) {
-      this.startLocationWatch();
-    }
+    this.startLocationWatch();
   }
 
   startLocationWatch() {
@@ -4431,16 +4523,11 @@ class RobotaxiMap extends HTMLElement {
       (error) => {
         if (error?.code === 1) {
           this.setStoredLocationPreference(LOCATION_PREFERENCE_DENIED);
+          this.clearUserLocationMarker();
+          this.clearLocationWatch();
         }
-
-        this.clearUserLocationMarker();
-        this.clearLocationWatch();
       },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 60_000,
-        timeout: 12_000,
-      },
+      PRECISE_GEOLOCATION_OPTIONS,
     );
   }
 
@@ -4477,7 +4564,9 @@ class RobotaxiMap extends HTMLElement {
 
     const latLng = window.L.latLng(latitude, longitude);
 
-    if (!this.userLocationMarker) {
+    const isFirstLocation = !this.userLocationMarker;
+
+    if (isFirstLocation) {
       this.userLocationMarker = window.L.marker(latLng, {
         icon: window.L.divIcon({
           className: "user-location-marker",
@@ -4492,6 +4581,11 @@ class RobotaxiMap extends HTMLElement {
       }).addTo(this.map);
     } else {
       this.userLocationMarker.setLatLng(latLng);
+    }
+
+    const serviceAreaIndex = this.getServiceAreaContaining(latitude, longitude);
+    if (isFirstLocation && serviceAreaIndex !== null && serviceAreaIndex !== 0) {
+      this.map.setView(latLng, 13);
     }
 
     if (this.rideSheetReady) {
@@ -4539,8 +4633,9 @@ class RobotaxiMap extends HTMLElement {
       this.activeTheme = theme;
     }
 
-    if (this.geofenceMask && this.geofenceBorder) {
+    if (this.geofenceMask && this.geofenceBorder && this.geofenceHalo) {
       this.geofenceMask.setStyle(GEOFENCE_THEME_STYLES[theme].mask);
+      this.geofenceHalo.setStyle(GEOFENCE_THEME_STYLES[theme].halo);
       this.geofenceBorder.setStyle(GEOFENCE_THEME_STYLES[theme].border);
     }
 
